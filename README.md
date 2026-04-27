@@ -33,10 +33,10 @@ Clicking a person opens their full detail view on the right side, showing:
 ### Suggested buddy detection
 The app reads the ticket comments and automatically identifies who the reporter suggested as the template user (the person whose AD rights and groups the new joiner should copy). It recognises a wide range of natural phrasings, for example:
 
-- *"please use TSELE as similar accesses"*
-- *"needs Axapta rights and the person Maksim Sapoznikov"*
-- *"it will be Božena Jurčik"*
-- *"need rights as Eimantas Tarasevicius"*
+- *"please use NSURN as similar accesses"*
+- *"needs Axapta rights and the person Name Surname"*
+- *"it will be Name Surname"*
+- *"need rights as Name Surname"*
 - *"copy rights from..."*, *"same access as..."*, *"based on..."*, and more
 
 The detected buddy is shown in a **blue info box** in the detail panel. When you open **AD Setup** for that person, the buddy field is pre-filled and the lookup runs automatically — you do not need to type anything.
