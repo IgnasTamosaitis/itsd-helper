@@ -1,6 +1,6 @@
-# Jira New Joiner Reminders
+# ITSD Jira Helper
 
-A Windows desktop tool for IT staff that connects to Jira and centralises everything needed to onboard a new employee — from tracking start dates and completing the onboarding checklist, to setting up their Active Directory account and coordinating with the ticket reporter.
+A Windows desktop tool for ITSD that connects to Jira and centralises everything needed to onboard a new employee — from tracking start dates and completing the onboarding checklist, to setting up their Active Directory account and coordinating with the ticket reporter.
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
