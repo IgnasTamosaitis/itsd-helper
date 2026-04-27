@@ -1,0 +1,241 @@
+import re
+import requests
+from datetime import date, timedelta
+from dateutil.parser import parse as parse_date
+
+
+def _adf_to_text(node: dict) -> str:
+    """Recursively extract plain text from an Atlassian Document Format node."""
+    if not isinstance(node, dict):
+        return ""
+    t = node.get("type", "")
+    if t == "text":
+        return node.get("text", "")
+    if t == "hardBreak":
+        return "\n"
+    if t == "mention":
+        return node.get("attrs", {}).get("text", "")
+    if t == "inlineCard":
+        return node.get("attrs", {}).get("url", "")
+    parts = [_adf_to_text(child) for child in node.get("content", [])]
+    text = "".join(parts)
+    if t in ("paragraph", "heading", "listItem"):
+        text = text.rstrip() + "\n"
+    if t in ("bulletList", "orderedList"):
+        text += "\n"
+    return text
+
+# ── Buddy detection ──────────────────────────────────────────────────────────
+
+_EXCLUDE_AUTHORS = {"Aleksandr Kovalevskij"}
+
+# Title-case full name: "Eimantas Tarasevicius"
+# (?-i:...) keeps this sub-pattern case-SENSITIVE even when the search uses IGNORECASE,
+# which prevents "TSELE for the groups" being greedily captured as a name.
+_NAME = (
+    r'(?-i:[A-ZŠŽĄČĘĖĮŲŪ][a-zšžąčęėįųū\-]{1,}'
+    r'(?:\s+[A-ZŠŽĄČĘĖĮŲŪ][a-zšžąčęėįųū\-]{1,}){1,2})'
+)
+# SAM account: exactly 5 chars — first letter of first name + first 4 of last name
+# e.g. "TSELE", "tsele"  (upper or lower case)
+_SAM = r'[A-Za-z][A-Za-z0-9]{4}\b'
+
+# Combined: full name first (more specific; _SAM is fallback for usernames)
+_BUDDY_VALUE = rf'({_NAME}|{_SAM})'
+
+_BUDDY_PATTERNS = [
+    # "rights as X", "access as X", "rights like X"
+    rf'(?:rights?|access(?:es)?)\s+(?:as|like)\s+{_BUDDY_VALUE}',
+    # "use X as similar accesses", "use X as template", "use X as a base"
+    rf'use\s+{_BUDDY_VALUE}\s+as\b',
+    # "the person X", "person is X"
+    rf'(?:the\s+)?person\s+(?:is\s+)?{_BUDDY_VALUE}',
+    # "it will be X", "will be X"
+    rf'will\s+be\s+{_BUDDY_VALUE}',
+    rf'copy\s+(?:rights?\s+)?from\s+{_BUDDY_VALUE}',
+    rf'buddy\s*(?:is|:)\s*{_BUDDY_VALUE}',
+    rf'{_BUDDY_VALUE}\s+(?:is\s+)?(?:a\s+|the\s+)?buddy',
+    rf'similar\s+(?:rights?\s+|access(?:es?)?\s+)?(?:to|as)\s+{_BUDDY_VALUE}',
+    rf'same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+{_BUDDY_VALUE}',
+    rf'template\s*(?:is|:)\s*{_BUDDY_VALUE}',
+    rf'copy\s+{_BUDDY_VALUE}(?:\'s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)',
+    rf'based\s+on\s+{_BUDDY_VALUE}',
+    rf'like\s+{_BUDDY_VALUE}(?:\'s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)',
+]
+
+
+def is_sam_account(value: str) -> bool:
+    """Returns True if value looks like a 5-char SAM account (not a full name)."""
+    return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9]{4}', value))
+
+
+def extract_buddy_from_comments(comments: list[dict]) -> dict | None:
+    """Scan comments (excluding IT authors) for a buddy/template user.
+    Returns {name, author, date} on first confident match, or None.
+    SAM matches (5-char) must be validated against AD by the caller before use."""
+    for c in comments:
+        if c["author"] in _EXCLUDE_AUTHORS:
+            continue
+        for pat in _BUDDY_PATTERNS:
+            m = re.search(pat, c["body"], re.IGNORECASE)
+            if m:
+                name = m.group(1).strip()
+                return {"name": name, "author": c["author"], "date": c["created"]}
+    return None
+
+
+# Custom field IDs from the real Girteka Jira tickets
+_CF_START_DATE   = "customfield_10980"   # text field, value: "2026-05-18"
+_CF_FIRST_NAME   = "customfield_10109"
+_CF_LAST_NAME    = "customfield_10111"
+_CF_POSITION     = "customfield_10977"
+_CF_OFFICE       = "customfield_10983"
+_CF_MANAGER      = "customfield_10978"
+_CF_REJOINER     = "customfield_14703"
+_CF_PHONE        = "customfield_10113"   # Phone Number (new joiner's phone)
+_CF_COMPANY_NAME = "customfield_10976"   # Company's name
+
+_BASE_FETCH_FIELDS = [
+    "summary", "status",
+    _CF_FIRST_NAME, _CF_LAST_NAME,
+    _CF_POSITION, _CF_OFFICE, _CF_MANAGER, _CF_REJOINER,
+    _CF_PHONE, _CF_COMPANY_NAME,
+]
+
+
+def _parse_start_date(raw: str):
+    raw = (raw or "").strip()
+    if not raw:
+        return None
+    # ISO / year-first format: 2026-05-04 or 2026.05.04 - never use dayfirst
+    if re.match(r'^\d{4}[.\-/]\d{2}[.\-/]\d{2}$', raw):
+        raw = raw.replace(".", "-").replace("/", "-")
+        try:
+            return parse_date(raw).date()
+        except Exception:
+            return None
+    # Other formats: "4 May 2026", "01 Jun 2026", "01/04/2026" (European DD/MM/YYYY)
+    try:
+        return parse_date(raw, dayfirst=True).date()
+    except Exception:
+        return None
+
+
+class JiraClient:
+    def __init__(self, url: str, email: str, token: str):
+        self.base = url.rstrip("/")
+        self.session = requests.Session()
+        self.session.auth = (email, token)
+        self.session.headers.update({"Accept": "application/json"})
+
+    def test_connection(self) -> str:
+        """Returns the logged-in user's display name, or raises on failure."""
+        r = self.session.get(f"{self.base}/rest/api/3/myself", timeout=10)
+        r.raise_for_status()
+        return r.json().get("displayName", "OK")
+
+    def get_comments(self, issue_key: str) -> list[dict]:
+        """Returns list of {author, created, body} dicts, oldest first."""
+        r = self.session.get(
+            f"{self.base}/rest/api/3/issue/{issue_key}/comment",
+            params={"maxResults": 100, "orderBy": "created"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        comments = []
+        for c in r.json().get("comments", []):
+            author  = c.get("author", {}).get("displayName", "Unknown")
+            created = c.get("created", "")[:16].replace("T", "  ")
+            body    = _adf_to_text(c.get("body", {})).strip()
+            if body:
+                comments.append({"author": author, "created": created, "body": body})
+        return comments
+
+    def post_comment(self, issue_key: str, text: str) -> None:
+        """Post a plain-text comment to a Jira issue (converted to ADF)."""
+        content = []
+        for para in text.split("\n\n"):
+            if not para.strip():
+                continue
+            para_nodes = []
+            for i, line in enumerate(para.split("\n")):
+                if i > 0:
+                    para_nodes.append({"type": "hardBreak"})
+                if line:
+                    para_nodes.append({"type": "text", "text": line})
+            if para_nodes:
+                content.append({"type": "paragraph", "content": para_nodes})
+        if not content:
+            content = [{"type": "paragraph", "content": [{"type": "text", "text": text}]}]
+        r = self.session.post(
+            f"{self.base}/rest/api/3/issue/{issue_key}/comment",
+            json={"body": {"type": "doc", "version": 1, "content": content}},
+            timeout=15,
+        )
+        r.raise_for_status()
+
+    def get_new_joiner_tickets(self, jql: str, _date_field: str = _CF_START_DATE) -> list[dict]:
+        date_field = (_date_field or _CF_START_DATE).strip() or _CF_START_DATE
+        fields = list(dict.fromkeys([*_BASE_FETCH_FIELDS, date_field]))
+        params = {
+            "jql": jql,
+            "fields": ",".join(fields),
+            "maxResults": 50,
+        }
+        r = self.session.get(
+            f"{self.base}/rest/api/3/search/jql",
+            params=params,
+            timeout=15,
+        )
+        r.raise_for_status()
+
+        tickets = []
+        for issue in r.json().get("issues", []):
+            f = issue["fields"]
+
+            first = (f.get(_CF_FIRST_NAME) or "").strip()
+            last  = (f.get(_CF_LAST_NAME)  or "").strip()
+            name  = f"{first} {last}".strip() or f.get("summary", issue["key"])
+
+            raw_date   = f.get(date_field) or ""
+            start_date = _parse_start_date(raw_date)
+
+            manager_raw = (f.get(_CF_MANAGER) or "").strip().lstrip(": ")
+
+            rejoiner_raw = f.get(_CF_REJOINER) or {}
+            if isinstance(rejoiner_raw, dict):
+                rejoiner = rejoiner_raw.get("value", "").strip()
+            else:
+                rejoiner = str(rejoiner_raw).strip()
+
+            phone        = (f.get(_CF_PHONE)        or "").strip()
+            company_name = (f.get(_CF_COMPANY_NAME) or "").strip()
+
+            tickets.append(
+                {
+                    "id":         issue["id"],
+                    "key":        issue["key"],
+                    "summary":    f.get("summary", issue["key"]),
+                    "name":       name,
+                    "first_name": first,
+                    "last_name":  last,
+                    "position":   (f.get(_CF_POSITION) or "").strip(),
+                    "office":     (f.get(_CF_OFFICE)   or "").strip(),
+                    "manager":      manager_raw,
+                    "rejoiner":     rejoiner,
+                    "phone":        phone,
+                    "company_name": company_name,
+                    "status":       (f.get("status") or {}).get("name", ""),
+                    "start_date":   start_date,
+                    "url":          f"{self.base}/browse/{issue['key']}",
+                }
+            )
+
+        # Sort by start date (no date -> end of list)
+        tickets.sort(key=lambda t: t["start_date"] or date.max)
+
+        # Hide tickets where the person already started more than 1 day ago
+        cutoff = date.today() - timedelta(days=1)
+        tickets = [t for t in tickets if t["start_date"] is None or t["start_date"] >= cutoff]
+
+        return tickets

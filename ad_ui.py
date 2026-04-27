@@ -1,0 +1,635 @@
+"""
+AD Setup window - new joiner / rejoiner onboarding automation.
+Account is always pre-created by SAP SF. We detect the scenario, then configure it.
+"""
+import threading
+import tkinter as tk
+from tkinter import messagebox
+from datetime import datetime
+
+from ad_automation import (
+    detect_location, detect_domain, build_email, DEFAULT_GROUPS,
+    generate_password, find_user_accounts, classify_scenario,
+    get_buddy_info,
+    build_new_joiner_script, build_rejoiner_dual_script,
+    build_rejoiner_single_script, run_ps,
+)
+
+BG     = "#F7F8FA"
+WHITE  = "#FFFFFF"
+ACCENT = "#0C66E4"
+GREEN  = "#1F845A"
+RED    = "#C9372C"
+ORANGE = "#B76E00"
+GRAY   = "#5E6C84"
+TEXT   = "#172B4D"
+BORDER = "#DFE3EA"
+SOFT_BLUE = "#E9F2FF"
+MONO   = ("Consolas", 9)
+DEFAULT_PASSWORD = "Initial123"
+
+SCENARIO_LABELS = {
+    "new_joiner":      ("New joiner", GREEN),
+    "rejoiner_dual":   ("Rejoiner - restore old account", ORANGE),
+    "rejoiner_single": ("Rejoiner - disabled account", ORANGE),
+    "unknown":         ("Needs manual review", RED),
+}
+
+
+class ADSetupWindow(tk.Toplevel):
+    def __init__(self, parent, ticket: dict, storage=None, on_completed=None,
+                 buddy_hint: str = ""):
+        super().__init__(parent)
+        self.ticket    = ticket
+        self.storage   = storage
+        self.on_completed = on_completed
+        self._buddy_hint = buddy_hint
+        self._location = detect_location(ticket.get("office", ""), ticket.get("company_name", ""))
+        self._domain   = detect_domain(ticket.get("company_name", ""))
+
+        # AD search results
+        self._accounts: list[dict] = []
+        self._scenario: str        = ""
+        self._sf_account: dict     = {}
+        self._old_account: dict    = {}
+        self._old_accounts: list[dict] = []
+        self._old_account_var = tk.StringVar()
+
+        # Groups state
+        self._group_vars: dict[str, tk.BooleanVar] = {}
+        self._buddy_group_vars: dict[str, tk.BooleanVar] = {}
+
+        self.title(f"AD Setup - {ticket.get('name', '')}")
+        self.geometry("880x820")
+        self.resizable(True, True)
+        self.configure(bg=BG)
+        self._build()
+
+    # ── Scaffold ──────────────────────────────────────────────────────────────
+
+    def _build(self):
+        tk.Label(self, text=f"  AD Setup - {self.ticket.get('name', '')}",
+                 bg=ACCENT, fg=WHITE, font=("Segoe UI", 13, "bold")).pack(fill="x", ipady=10)
+
+        canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
+        sb     = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
+        canvas.configure(yscrollcommand=sb.set)
+        sb.pack(side="right", fill="y")
+        canvas.pack(fill="both", expand=True)
+
+        body   = tk.Frame(canvas, bg=BG)
+        win_id = canvas.create_window((0, 0), window=body, anchor="nw")
+        body.bind("<Configure>",   lambda e: canvas.configure(scrollregion=canvas.bbox("all")))
+        canvas.bind("<Configure>", lambda e: canvas.itemconfig(win_id, width=e.width))
+        canvas.bind_all("<MouseWheel>",
+                        lambda e: canvas.yview_scroll(int(-1 * e.delta / 120), "units"))
+        self._fill(body)
+        if self._buddy_hint:
+            self._buddy_var.set(self._buddy_hint)
+            self.after(150, self._fetch_buddy)
+
+    def _section(self, parent, title: str) -> tk.Frame:
+        tk.Label(parent, text=title, bg=BG, fg=ACCENT,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=20, pady=(18, 2))
+        tk.Frame(parent, bg=BORDER, height=1).pack(fill="x", padx=20, pady=(0, 8))
+        f = tk.Frame(parent, bg=BG)
+        f.pack(fill="x", padx=20, pady=2)
+        return f
+
+    def _btn(self, parent, text, cmd, bg=ACCENT, fg=WHITE, bold=False):
+        return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
+                         relief="flat", bd=0, cursor="hand2",
+                         font=("Segoe UI", 9, "bold" if bold else "normal"),
+                         padx=11, pady=5,
+                         activebackground=ACCENT, activeforeground=WHITE)
+
+    def _scrollable_text(self, parent, *, height: int, bg: str, fg: str,
+                         state: str = "normal") -> tk.Text:
+        frame = tk.Frame(parent, bg=BG)
+        frame.pack(fill="x")
+        frame.columnconfigure(0, weight=1)
+        frame.rowconfigure(0, weight=1)
+
+        text = tk.Text(frame, height=height, relief="solid", bd=1,
+                       font=MONO, bg=bg, fg=fg, state=state,
+                       wrap="none")
+        yscroll = tk.Scrollbar(frame, orient="vertical", command=text.yview)
+        xscroll = tk.Scrollbar(frame, orient="horizontal", command=text.xview)
+        text.configure(yscrollcommand=yscroll.set, xscrollcommand=xscroll.set)
+
+        text.grid(row=0, column=0, sticky="nsew")
+        yscroll.grid(row=0, column=1, sticky="ns")
+        xscroll.grid(row=1, column=0, sticky="ew")
+        return text
+
+    # ── Main content ──────────────────────────────────────────────────────────
+
+    def _fill(self, body):
+        # ── 1. Ticket summary ─────────────────────────────────────────────────
+        sec = self._section(body, "1. Joiner details")
+        for label, key in [("Name", "name"), ("Position", "position"),
+                            ("Company", "company_name"), ("Office", "office"),
+                            ("Manager", "manager"), ("Phone", "phone"),
+                            ("Start date", "start_date")]:
+            row = tk.Frame(sec, bg=BG)
+            row.pack(fill="x", pady=1)
+            tk.Label(row, text=f"{label}:", bg=BG, fg=GRAY, font=("Segoe UI", 9),
+                     width=12, anchor="e").pack(side="left")
+            tk.Label(row, text=str(self.ticket.get(key, "") or ""), bg=BG, fg=TEXT,
+                     font=("Segoe UI", 9, "bold"), anchor="w").pack(side="left")
+
+        tk.Label(sec, text=f"Location: {self._location.title()}  |  "
+                           f"Starting groups: {', '.join(DEFAULT_GROUPS[self._location])}",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8), wraplength=780, justify="left"
+                 ).pack(anchor="w", pady=(6, 0))
+
+        # ── 2. Find AD accounts ───────────────────────────────────────────────
+        sec2 = self._section(body, "2. Find the account")
+
+        top_row = tk.Frame(sec2, bg=BG)
+        top_row.pack(fill="x")
+        self._btn(top_row, "Find account", self._search_ad,
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left")
+        self._scenario_label = tk.Label(top_row, text="", bg=BG,
+                                        font=("Segoe UI", 10, "bold"))
+        self._scenario_label.pack(side="left", padx=16)
+
+        self._search_out = tk.Text(sec2, height=6, relief="solid", bd=1,
+                                   font=MONO, bg=WHITE, fg="#172B4D", state="disabled")
+        self._search_out.pack(fill="x", pady=(6, 4))
+
+        tk.Label(sec2,
+                 text="New joiner: one prepared account is moved and completed.\n"
+                      "Rejoiner: the previous account is restored; the temporary SF account is removed.",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8), justify="left").pack(anchor="w")
+
+        # ── 3. Account username (filled after search) ─────────────────────────
+        sec3 = self._section(body, "3. Account to use")
+
+        self._username_var = tk.StringVar()
+        urow = tk.Frame(sec3, bg=BG)
+        urow.pack(fill="x")
+        tk.Label(urow, text="Username:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        tk.Entry(urow, textvariable=self._username_var, font=("Consolas", 11),
+                 relief="solid", bd=1, width=14, state="readonly").pack(side="left", padx=6, ipady=3)
+        tk.Label(urow, text="filled automatically after search",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8)).pack(side="left", padx=6)
+
+        # Rejoiner extra: SF username for reference
+        self._sf_username_frame = tk.Frame(sec3, bg=BG)
+        self._sf_username_frame.pack(fill="x")
+        self._sf_label = tk.Label(self._sf_username_frame, text="", bg=BG,
+                                  fg=ORANGE, font=("Segoe UI", 9))
+        self._sf_label.pack(anchor="w")
+
+        self._old_account_frame = tk.Frame(sec3, bg=BG)
+        tk.Label(self._old_account_frame, text="Old account:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        self._old_account_menu_holder = tk.Frame(self._old_account_frame, bg=BG)
+        self._old_account_menu_holder.pack(side="left", padx=6)
+        self._old_account_hint = tk.Label(self._old_account_frame, text="",
+                                          bg=BG, fg=ORANGE, font=("Segoe UI", 8))
+        self._old_account_hint.pack(side="left", padx=6)
+
+        # ── 4. Email ──────────────────────────────────────────────────────────
+        sec4 = self._section(body, "4. Email address")
+
+        default_email = build_email(
+            self.ticket.get("first_name", ""),
+            self.ticket.get("last_name", ""),
+            self._domain,
+        )
+        self._email_var = tk.StringVar(value=default_email)
+        erow = tk.Frame(sec4, bg=BG)
+        erow.pack(fill="x")
+        tk.Label(erow, text="Email:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        tk.Entry(erow, textvariable=self._email_var, font=("Segoe UI", 10),
+                 relief="solid", bd=1, width=42).pack(side="left", padx=6, ipady=3)
+
+        # Section 5. Buddy -> OU + group copy
+        sec5 = self._section(body, "5. Match a similar user")
+
+        buddy_row = tk.Frame(sec5, bg=BG)
+        buddy_row.pack(fill="x")
+        tk.Label(buddy_row, text="Template user:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        self._buddy_var = tk.StringVar()
+        tk.Entry(buddy_row, textvariable=self._buddy_var, font=("Consolas", 10),
+                 relief="solid", bd=1, width=14).pack(side="left", padx=6, ipady=3)
+        self._btn(buddy_row, "Use as template", self._fetch_buddy,
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left")
+        self._buddy_status = tk.Label(buddy_row, text="", bg=BG, fg=GRAY, font=("Segoe UI", 9))
+        self._buddy_status.pack(side="left", padx=8)
+
+        ou_row = tk.Frame(sec5, bg=BG)
+        ou_row.pack(fill="x", pady=(6, 0))
+        tk.Label(ou_row, text="Target folder:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        self._ou_var = tk.StringVar()
+        tk.Entry(ou_row, textvariable=self._ou_var, font=("Segoe UI", 8),
+                 relief="solid", bd=1, width=62).pack(side="left", padx=6, ipady=3)
+
+        tk.Label(sec5, text="Groups from the template user:",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 2))
+
+        self._buddy_groups_frame = tk.Frame(sec5, bg=WHITE, relief="solid", bd=1)
+        self._buddy_groups_frame.pack(fill="x", pady=(0, 4))
+        tk.Label(self._buddy_groups_frame, text="  (fetch buddy first)",
+                 bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+
+        copy_row = tk.Frame(sec5, bg=BG)
+        copy_row.pack(anchor="w")
+        self._btn(copy_row, "Select all",   self._buddy_select_all,   bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 6))
+        self._btn(copy_row, "Clear", self._buddy_deselect_all, bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 6))
+        self._btn(copy_row, "Add selected groups", self._copy_buddy_groups,
+                  bg=GREEN, fg=WHITE).pack(side="left")
+
+        # ── 6. Groups for new user ────────────────────────────────────────────
+        sec6 = self._section(body, "6. Groups to add")
+
+        tk.Label(sec6, text="Default groups pre-selected. Add buddy groups above, then adjust.",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 4))
+
+        self._groups_frame = tk.Frame(sec6, bg=WHITE, relief="solid", bd=1)
+        self._groups_frame.pack(fill="x")
+        self._rebuild_groups_panel(DEFAULT_GROUPS[self._location])
+
+        # ── 7. Password ───────────────────────────────────────────────────────
+        sec7 = self._section(body, "7. Password")
+
+        self._pwd_var = tk.StringVar(value=DEFAULT_PASSWORD)
+        pwd_row = tk.Frame(sec7, bg=BG)
+        pwd_row.pack(fill="x")
+        tk.Label(pwd_row, text="Password:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
+        tk.Entry(pwd_row, textvariable=self._pwd_var, font=("Consolas", 11),
+                 relief="solid", bd=1, width=20).pack(side="left", padx=6, ipady=3)
+        self._btn(pwd_row, "Random password", lambda: self._pwd_var.set(generate_password()),
+                  bg="#DEEBFF", fg=ACCENT).pack(side="left", padx=(0, 6))
+        self._btn(pwd_row, "Copy", lambda: self._copy(self._pwd_var.get()),
+                  bg="#DEEBFF", fg=ACCENT).pack(side="left")
+
+        # SMS template
+        tk.Label(sec7, text="SMS template (click anywhere on box to copy):",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", pady=(8, 2))
+        self._sms_box = tk.Text(sec7, height=5, relief="solid", bd=1,
+                                font=("Segoe UI", 9), bg="#FFFAE6",
+                                fg="#172B4D", cursor="hand2", state="disabled")
+        self._sms_box.pack(fill="x")
+        self._sms_box.bind("<Button-1>", lambda e: self._copy_sms())
+        self._update_sms()
+        self._username_var.trace_add("write", lambda *_: self._update_sms())
+        self._pwd_var.trace_add("write",      lambda *_: self._update_sms())
+
+        # ── 8. Preview & run ──────────────────────────────────────────────────
+        sec8 = self._section(body, "8. Review and apply")
+
+        btn_row = tk.Frame(sec8, bg=BG)
+        btn_row.pack(fill="x", pady=4)
+        self._btn(btn_row, "Review changes", self._generate_preview,
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 8))
+        self._btn(btn_row, "Copy review", self._copy_script,
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 8))
+        self._btn(btn_row, "Copy result", self._copy_output,
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 8))
+        self._btn(btn_row, "Apply changes", self._run_script,
+                  bg=GREEN, fg=WHITE, bold=True).pack(side="left")
+
+        script_frame = tk.Frame(sec8, bg=BG)
+        script_frame.pack(fill="x", pady=(6, 4))
+        self._script_box = self._scrollable_text(
+            script_frame, height=18, bg=WHITE, fg=TEXT)
+        self._script_box.config(insertbackground=TEXT)
+
+        tk.Label(sec8, text="Result:", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w")
+        self._run_status = tk.Label(sec8, text="", bg=BG, fg=GRAY,
+                                    font=("Segoe UI", 9, "bold"))
+        self._run_status.pack(anchor="w")
+        output_frame = tk.Frame(sec8, bg=BG)
+        output_frame.pack(fill="x", pady=(2, 24))
+        self._output_box = self._scrollable_text(
+            output_frame, height=7, bg=WHITE, fg="#172B4D", state="disabled")
+
+    # ── AD search & scenario detection ───────────────────────────────────────
+
+    def _search_ad(self):
+        first = self.ticket.get("first_name", "")
+        last  = self.ticket.get("last_name", "")
+        self._set_text(self._search_out, "Searching AD...")
+        self._scenario_label.config(text="", fg=GRAY)
+
+        def _do():
+            accounts = find_user_accounts(first, last)
+            scenario = classify_scenario(accounts)
+            self.after(0, lambda: self._apply_search_result(accounts, scenario))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _apply_search_result(self, accounts: list[dict], scenario: str):
+        self._accounts = accounts
+        self._scenario = scenario
+
+        # Populate scenario badge
+        label_text, color = SCENARIO_LABELS.get(scenario, ("UNKNOWN", RED))
+        self._scenario_label.config(text=label_text, fg=color)
+
+        # Build summary text
+        if not accounts:
+            summary = "No accounts found. Check the name spelling."
+        else:
+            lines = []
+            for a in accounts:
+                status = "ACTIVE" if a["enabled"] else "DISABLED"
+                sf_tag = "  temporary SF account" if a["is_sf"] else ""
+                emp    = f"  employee ID: {a['employee_id']}" if a["employee_id"] else ""
+                lines.append(f"[{status}]  {a['username']}{sf_tag}{emp}")
+                lines.append(f"         {a['ou']}")
+            summary = "\n".join(lines)
+        self._set_text(self._search_out, summary)
+
+        # Pre-fill username based on scenario
+        sf_accounts  = [a for a in accounts if a["is_sf"]]
+        old_accounts = [a for a in accounts if not a["is_sf"]]
+
+        self._sf_account  = sf_accounts[0]  if sf_accounts  else {}
+        self._old_accounts = old_accounts
+        self._old_account = old_accounts[0] if old_accounts else {}
+        self._hide_old_account_picker()
+
+        if scenario == "new_joiner":
+            self._username_var.set(self._sf_account.get("username", ""))
+            self._sf_label.config(text="")
+        elif scenario == "rejoiner_dual":
+            if len(old_accounts) > 1:
+                self._show_old_account_picker(old_accounts)
+            else:
+                self._username_var.set(self._old_account.get("username", ""))
+            self._sf_label.config(
+                text=f"Temporary SF account to remove later: {self._sf_account.get('username', '')}  "
+                     f"employee ID: {self._sf_account.get('employee_id', 'N/A')}")
+        elif scenario in ("rejoiner_single", "unknown"):
+            self._username_var.set(accounts[0]["username"] if accounts else "")
+            self._sf_label.config(text="")
+
+    def _show_old_account_picker(self, old_accounts: list[dict]):
+        for w in self._old_account_menu_holder.winfo_children():
+            w.destroy()
+        values = [a["username"] for a in old_accounts]
+        self._old_account_var.set(values[0])
+        tk.OptionMenu(
+            self._old_account_menu_holder,
+            self._old_account_var,
+            *values,
+            command=lambda _=None: self._select_old_account(),
+        ).pack(side="left")
+        self._old_account_hint.config(text="Multiple previous accounts found. Choose the one to restore.")
+        self._old_account_frame.pack(fill="x", pady=(4, 0))
+        self._select_old_account()
+
+    def _hide_old_account_picker(self):
+        self._old_account_frame.pack_forget()
+        self._old_account_hint.config(text="")
+
+    def _select_old_account(self):
+        username = self._old_account_var.get()
+        for account in self._old_accounts:
+            if account["username"] == username:
+                self._old_account = account
+                self._username_var.set(username)
+                return
+
+    # ── Buddy ─────────────────────────────────────────────────────────────────
+
+    def _fetch_buddy(self):
+        sam = self._buddy_var.get().strip()
+        if not sam:
+            messagebox.showwarning("No buddy", "Enter the buddy's SAM account name.", parent=self)
+            return
+        self._buddy_status.config(text="Loading...", fg=GRAY)
+
+        def _do():
+            ou, groups, err = get_buddy_info(sam)
+            def _update():
+                if err:
+                    self._buddy_status.config(text=f"Error: {err}", fg=RED)
+                    return
+                self._ou_var.set(ou)
+                self._buddy_status.config(text=f"{len(groups)} groups found", fg=GREEN)
+                for w in self._buddy_groups_frame.winfo_children():
+                    w.destroy()
+                self._buddy_group_vars = {}
+                for i, g in enumerate(groups):
+                    var = tk.BooleanVar(value=False)
+                    self._buddy_group_vars[g] = var
+                    if i % 2 == 0:
+                        rf = tk.Frame(self._buddy_groups_frame, bg=WHITE)
+                        rf.pack(fill="x")
+                    tk.Checkbutton(rf, text=g, variable=var,
+                                   bg=WHITE, font=("Segoe UI", 9),
+                                   anchor="w").pack(side="left", padx=12, pady=1)
+            self.after(0, _update)
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _buddy_select_all(self):
+        for v in self._buddy_group_vars.values(): v.set(True)
+
+    def _buddy_deselect_all(self):
+        for v in self._buddy_group_vars.values(): v.set(False)
+
+    def _copy_buddy_groups(self):
+        selected = [g for g, v in self._buddy_group_vars.items() if v.get()]
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Tick some buddy groups first.", parent=self)
+            return
+        existing = list(self._group_vars.keys())
+        combined = list(dict.fromkeys(existing + selected))
+        if combined != existing:
+            self._rebuild_groups_panel(combined)
+
+    # ── Groups panel ──────────────────────────────────────────────────────────
+
+    def _rebuild_groups_panel(self, groups: list[str]):
+        for w in self._groups_frame.winfo_children():
+            w.destroy()
+        self._group_vars.clear()
+        for i, g in enumerate(groups):
+            var = tk.BooleanVar(value=True)
+            self._group_vars[g] = var
+            if i % 2 == 0:
+                rf = tk.Frame(self._groups_frame, bg=WHITE)
+                rf.pack(fill="x")
+            tk.Checkbutton(rf, text=g, variable=var,
+                           bg=WHITE, font=("Segoe UI", 9),
+                           anchor="w").pack(side="left", padx=12, pady=1)
+
+    def _active_groups(self) -> list[str]:
+        return [g for g, v in self._group_vars.items() if v.get()]
+
+    # ── SMS ───────────────────────────────────────────────────────────────────
+
+    def _update_sms(self):
+        phone    = self.ticket.get("phone", "N/A") or "N/A"
+        username = self._username_var.get() or "(username)"
+        password = self._pwd_var.get()
+        msg = (f"Click box to copy SMS template  (send to {phone})\n\n"
+               f"Hello,\n\nYour username and password is:\n\n"
+               f"Username: {username}\nPassword: {password}\n\nHave a great day!")
+        self._sms_box.config(state="normal")
+        self._sms_box.delete("1.0", "end")
+        self._sms_box.insert("1.0", msg)
+        self._sms_box.config(state="disabled")
+
+    def _copy_sms(self):
+        username = self._username_var.get()
+        password = self._pwd_var.get()
+        self._copy(f"Hello,\n\nYour username and password is:\n\n"
+                   f"Username: {username}\nPassword: {password}\n\nHave a great day!")
+
+    # ── Script ────────────────────────────────────────────────────────────────
+
+    def _build_script(self) -> str:
+        email    = self._email_var.get().strip()
+        password = self._pwd_var.get().strip()
+        ou       = self._ou_var.get().strip()
+        groups   = self._active_groups()
+
+        if not self._scenario:
+            raise ValueError("Search for AD accounts first (Section 2).")
+        if not email:
+            raise ValueError("Email address is required.")
+        if not password:
+            raise ValueError("Password is required.")
+        if not ou:
+            raise ValueError("Target OU is required.\nEnter a buddy username and click 'Fetch OU + Groups'.")
+
+        if self._scenario == "new_joiner":
+            if not self._sf_account.get("username"):
+                raise ValueError("Temporary SF account was not detected. Search again before preparing changes.")
+            return build_new_joiner_script(self.ticket, self._sf_account, ou, email, password, groups)
+        elif self._scenario == "rejoiner_dual":
+            if not self._sf_account.get("username") or not self._old_account.get("username"):
+                raise ValueError("Both the temporary SF account and previous account are required.")
+            return build_rejoiner_dual_script(
+                self.ticket, self._sf_account, self._old_account, ou, email, password, groups)
+        elif self._scenario == "rejoiner_single":
+            if not self._accounts:
+                raise ValueError("No AD account is available for this rejoiner.")
+            return build_rejoiner_single_script(
+                self.ticket, self._accounts[0], ou, email, password, groups)
+        else:
+            raise ValueError(f"Scenario '{self._scenario}' requires manual review before changes can be prepared.")
+
+    def _generate_preview(self):
+        try:
+            self._script_box.delete("1.0", "end")
+            self._script_box.insert("1.0", self._build_script())
+        except ValueError as e:
+            messagebox.showwarning("Missing info", str(e), parent=self)
+
+    def _copy_script(self):
+        try:
+            self._copy(self._build_script())
+        except ValueError as e:
+            messagebox.showwarning("Missing info", str(e), parent=self)
+
+    def _copy_output(self):
+        text = self._output_box.get("1.0", "end-1c").strip()
+        if not text:
+            messagebox.showinfo("No result yet", "There is no result to copy yet.", parent=self)
+            return
+        self._copy(text)
+
+    def _run_script(self):
+        try:
+            script = self._build_script()
+        except ValueError as e:
+            messagebox.showwarning("Missing info", str(e), parent=self)
+            return
+
+        if not messagebox.askyesno(
+            "Confirm - Real AD changes",
+            self._build_safety_summary(),
+            parent=self,
+        ):
+            return
+
+        started = datetime.now()
+        self._run_status.config(text="In progress", fg=ORANGE)
+        self._set_text(self._output_box, f"[{started:%Y-%m-%d %H:%M:%S}] Applying changes...")
+
+        def _do():
+            out, err, code = run_ps(script, timeout=120)
+            finished = datetime.now()
+            status = "Completed" if code == 0 and not err else ("Not completed" if code != 0 else "Completed with notes")
+            result = f"[{finished:%Y-%m-%d %H:%M:%S}] {status}\n\n"
+            result += out
+            if err:
+                result += f"\n\n--- Details ---\n{err}"
+            if code != 0:
+                result += f"\n\nResult code: {code}"
+            self.after(0, lambda: self._apply_run_result(status, result or "(no output)"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _build_safety_summary(self) -> str:
+        groups = self._active_groups()
+        target_user = self._username_var.get().strip() or "(not selected)"
+        sf_user = self._sf_account.get("username", "")
+        manager = self.ticket.get("manager", "") or "(not set in Jira)"
+        delete_line = ""
+        if self._scenario == "rejoiner_dual":
+            delete_line = f"\nTemporary SF account to remove: {sf_user}"
+
+        group_text = f"{len(groups)} group(s)"
+        if not groups:
+            group_text += " - none selected"
+
+        return (
+            "This will make real changes to Active Directory.\n\n"
+            f"Case type: {self._scenario.replace('_', ' ')}\n"
+            f"Account to update: {target_user}"
+            f"{delete_line}\n"
+            f"Target folder: {self._ou_var.get().strip()}\n"
+            f"Email: {self._email_var.get().strip()}\n"
+            f"Groups: {group_text}\n"
+            f"Manager from Jira: {manager}\n"
+            "Manager will be added only when there is one clear match.\n\n"
+            "Proceed?"
+        )
+
+    def _apply_run_result(self, status: str, text: str):
+        color = GREEN if status == "Completed" else (RED if status == "Not completed" else ORANGE)
+        self._run_status.config(text=status, fg=color)
+        self._set_text(self._output_box, text)
+        if status != "Not completed":
+            self._mark_setup_completed(status)
+
+    def _mark_setup_completed(self, status: str):
+        if not self.storage:
+            return
+        info = {
+            "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M"),
+            "status": status,
+            "scenario": self._scenario,
+            "account": self._username_var.get().strip(),
+            "email": self._email_var.get().strip(),
+            "target_ou": self._ou_var.get().strip(),
+            "groups_count": len(self._active_groups()),
+        }
+        self.storage.mark_ad_setup(self.ticket["id"], info)
+        if self.on_completed:
+            self.after(0, self.on_completed)
+
+    # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _copy(self, text: str):
+        self.clipboard_clear()
+        self.clipboard_append(text)
+
+    @staticmethod
+    def _set_text(widget: tk.Text, text: str):
+        widget.config(state="normal")
+        widget.delete("1.0", "end")
+        widget.insert("1.0", text)
+        widget.config(state="disabled")
