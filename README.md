@@ -21,57 +21,100 @@ Clicking a person opens their full detail view on the right side, showing:
 - **Name and joiner type** — a clear badge indicates whether this is a **New Joiner** or a **Rejoiner**
 - **Start date**, position, office, manager, and ticket status
 - **AD setup summary** — if AD has been completed, a green box shows when it was done, which account was used, the result, and the target folder
-- **Suggested buddy** — automatically detected from the Jira comments (see below)
+- **Suggested buddy** — automatically detected from Jira comments (see below)
 - **Onboarding checklist** — five tasks to tick off as you complete them
 - **Notes** — a free-text field per person, auto-saved as you type
-- **Jira comments** — all comments from the ticket, loaded automatically, so you never need to open Jira just to read what the reporter wrote
+- **Jira comments** — all comments from the ticket, loaded automatically
 
 ---
 
 ## Automations
 
 ### Suggested buddy detection
-The app reads the ticket comments and automatically identifies who the reporter suggested as the template user (the person whose AD rights and groups the new joiner should copy). It recognises a wide range of natural phrasings, for example:
+The app reads ticket comments and automatically identifies who the reporter suggested as the template user. It recognises a wide range of phrasings, for example:
 
 - *"please use NSURN as similar accesses"*
-- *"needs Axapta rights and the person Name Surname"*
+- *"needs the person Name Surname"*
 - *"it will be Name Surname"*
 - *"need rights as Name Surname"*
+- *"Person who is working in the similar job role – Name Surname"*
 - *"copy rights from..."*, *"same access as..."*, *"based on..."*, and more
 
-The detected buddy is shown in a **blue info box** in the detail panel. When you open **AD Setup** for that person, the buddy field is pre-filled and the lookup runs automatically — you do not need to type anything.
+When a full name is found, the app searches AD and resolves it to a SAM account automatically. The detected buddy is shown in a **blue info box**. When you open AD Setup, the buddy field is pre-filled and the lookup runs automatically.
 
-If no buddy is found in the comments, an **orange hint** is shown instead, and the **Ask reporter** button becomes available.
+If no buddy is found in the comments, an **orange hint** appears instead with a text field where you can type the buddy's SAM account manually. Manual buddy entries are **saved and restored** between sessions — they will not be overridden by comment scanning.
 
 ### Ask reporter
-If the reporter has not yet mentioned a buddy or specified the required access, you can send them a pre-written comment directly from the app without opening Jira. Clicking **Ask reporter** opens a preview of the message, which you can edit before sending. Once posted, the app immediately fetches the updated comments — if the reporter replies with a name, the buddy box updates on its own.
+If the reporter has not mentioned a buddy or specified the required access, you can send them a pre-written comment directly from the app without opening Jira. Once posted, the app fetches updated comments — if the reporter replies with a name, the buddy box updates automatically.
 
 ### Windows notifications
 The app sends desktop notifications in two situations:
 
 **Per-joiner reminders** — when a person's start date is within the configured number of days (default: 3), you receive a notification showing how many checklist tasks are still pending. Each person triggers at most one notification per day.
 
-**Morning summary** — every day at 9:00 AM, if there are any joiners starting within the next 7 days, you receive a single summary notification listing all of them with their start dates and task progress.
+**Morning summary** — every day at 9:00 AM, if there are any joiners starting within the next 7 days, you receive a single summary notification listing all of them.
 
 ---
 
 ## Active Directory setup wizard
 
-The **AD Setup** button opens a step-by-step wizard for configuring the new joiner's AD account. The wizard covers:
+The **AD Setup** button opens a step-by-step wizard for configuring the new joiner's AD account.
 
-1. **Joiner details** — name, position, company, office, manager, phone, and start date pulled directly from Jira
-2. **Account search** — searches Active Directory by first and last name and automatically detects which scenario applies:
-   - **New joiner** — one account was provisioned by SAP SuccessFactors (SF), ready to be moved and configured
-   - **Rejoiner (dual account)** — an SF dummy account exists alongside an old disabled account; the old account is restored and the dummy is removed
-   - **Rejoiner (single account)** — one disabled account with no SF duplicate; it is re-enabled and reconfigured
-3. **Account selection** — pre-filled automatically; if multiple old accounts are found you can choose which one to restore
-4. **Email address** — pre-generated from the person's name and company domain
-5. **Template user (buddy)** — pre-filled from the detected buddy in comments; clicking *Use as template* fetches the buddy's OU and group memberships so you can copy them across
-6. **Groups** — default groups for the person's location (Lithuania, Poland, or Georgia) are pre-selected; buddy groups can be added and individual groups toggled on or off
-7. **Password** — default initial password with an option to generate a random one; an SMS template is shown ready to copy and send to the new joiner's phone
-8. **Review and apply** — a full PowerShell script is generated based on all the above; you can review it before running, and copy either the script or the result output
+### Scenario detection
+The wizard searches AD by first and last name and automatically detects one of three scenarios:
 
-AD credentials are requested at execution time and are never stored by the app.
+| Scenario | What it means | What the script does |
+|---|---|---|
+| **New joiner** | One SF-provisioned account in the SF OU | Moves to correct OU, sets email and location fields, adds groups, resets password |
+| **Rejoiner (dual)** | SF dummy + old disabled account | Reads all employment data from SF dummy, restores old account, deletes dummy |
+| **Rejoiner (single)** | One disabled account, no SF dummy | Re-enables old account, sets all attributes from Jira ticket and buddy |
+
+> **Note:** For rejoiner (single), a yellow warning banner is shown reminding you to verify the Jira ticket data — position, company, and manager — before applying, since no SF dummy exists to pull from.
+
+### What the script sets automatically
+
+**New joiner** — SF already provisions Title, Description, Department, Company, Office, Manager, EmployeeID, extensionAttribute5, and extensionAttribute15. The script only fills what SF leaves blank:
+- Email address and proxyAddresses
+- `targetAddress` (set to match primary email)
+- City, PostalCode, Country (from company address map)
+- `extensionAttribute10` (manager's email, read from the SF account's Manager DN)
+- `extensionAttribute14` (copied from buddy)
+- Password reset
+
+**Rejoiner (dual)** — reads Title, Description, Department, Company, Manager, and extensionAttribute5 directly from the SF dummy account (authoritative HR data). Also sets:
+- All location fields from address map
+- Email, proxyAddresses, targetAddress
+- `extensionAttribute10` (manager email from SF dummy's Manager DN)
+- `extensionAttribute14` (from buddy)
+- `extensionAttribute15` (auto-set from company)
+- Enables account, clears `msExchHideFromAddressLists`, moves OU, adds groups, resets password, deletes SF dummy
+
+**Rejoiner (single)** — same as dual but sources employment data from the Jira ticket and buddy instead of an SF dummy.
+
+### Company address map
+For Girteka group companies (GCC, TNDM, Girteka*, ME Trailers, ClassTrucks Lithuania), the following are set automatically:
+
+| Field | Value |
+|---|---|
+| Street | Laisvės pr. 36 |
+| City | Vilnius |
+| PostalCode | 5623 |
+| Country | LT |
+| Office | Vilnius |
+| extensionAttribute15 | SF |
+
+### Template user (buddy)
+Clicking **Use as template** fetches the buddy's OU, groups, Department, and extended attributes (`extensionAttribute5`, `extensionAttribute14`). Each extended attribute is shown with a **checkbox** so you can decide per-attribute whether to copy it. `extensionAttribute5` is only shown for **rejoiner (single)** — for new joiners and rejoiner (dual) it is already set correctly by SF or the SF dummy.
+
+### Stale group cleanup
+For rejoiner scenarios, after fetching the buddy, a **Stale groups** panel appears showing groups the old account has that the buddy does not. These are pre-unticked — you select which ones to remove and click **Remove selected from old account**. The app asks for confirmation before making any changes.
+
+### Post-run verification
+After the script runs, the app automatically fetches the account from AD and appends a full attribute summary to the output — Enabled, Title, Description, Department, Company, Office, EmailAddress, Manager, all extensionAttributes, targetAddress, and proxyAddresses — so you can confirm everything is correct without opening ADUC.
+
+### proxyAddresses handling
+- Primary `SMTP:Name.Surname@girteka.eu` is set or confirmed
+- If a `SMTP:Name.Surname@girteka.lt` entry exists with uppercase prefix, it is automatically converted to lowercase `smtp:` (secondary) so the `.eu` address remains the sole primary
 
 ---
 
@@ -137,7 +180,7 @@ The app runs in the **system tray** (bottom-right corner of your taskbar). Right
 
 ### Data storage
 
-All notes, checklist progress, and AD setup records are stored locally on your machine at:
+All notes, checklist progress, AD setup records, and manual buddy entries are stored locally on your machine at:
 
 ```
 C:\Users\<your username>\.jira-reminders\
@@ -151,8 +194,8 @@ Use **Back up data** regularly to keep snapshots. Backups are saved in the `back
 
 **No tickets appear** — click *Check now* from the tray icon and wait a few seconds. If the problem persists, open Settings and use *Test Connection* to check your credentials.
 
-**Buddy not detected** — scroll down to the Jira comments section in the detail panel and read what the reporter wrote. If the phrasing is unusual, use *Ask reporter* to post a comment requesting the information in a standard format.
+**Buddy not detected** — scroll down to the Jira comments section in the detail panel. If the phrasing is unusual, type the SAM account directly in the manual buddy field in the orange hint box.
 
-**AD Setup returns errors** — ensure you are logged into a machine joined to the domain and that you enter valid domain admin credentials when prompted.
+**AD Setup returns errors** — ensure you are logged into a machine joined to the domain and that you enter valid domain admin credentials when prompted. The most common cause is expired credentials or not being connected to the corporate network / VPN.
 
 **Debug tool** — if you need to diagnose Jira connection or query issues, run `debug.py` from a terminal. It will test the connection and print a list of all matching tickets with their raw field values.
