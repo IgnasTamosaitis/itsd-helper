@@ -452,7 +452,6 @@ class ADSetupWindow(tk.Toplevel):
                 _LABELS = {
                     "extensionAttribute5":  "extensionAttribute5",
                     "extensionAttribute14": "extensionAttribute14",
-                    "extensionAttribute15": "extensionAttribute15",
                 }
                 any_value = False
                 for attr, label in _LABELS.items():
