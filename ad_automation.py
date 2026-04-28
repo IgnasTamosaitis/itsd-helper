@@ -66,7 +66,10 @@ def _proxy_address_lines(sam: str, email: str) -> list[str]:
 
 
 def _set_user_attribute_lines(sam: str, email: str, title: str,
-                              office: str, manager: str) -> list[str]:
+                              office: str, manager: str,
+                              company: str = "", address: dict = None) -> list[str]:
+    addr = address or {}
+    effective_office = addr.get("office") or office
     L = [
         "# Update organisation attributes",
         "$setParams = @{",
@@ -74,8 +77,21 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
     ]
     if title:
         L.append(f"    Title = '{title}'")
-    if office:
-        L.append(f"    Office = '{office}'")
+        L.append(f"    Description = '{title}'")
+    if effective_office:
+        L.append(f"    Office = '{_e(effective_office)}'")
+    if company:
+        L.append(f"    Company = '{_e(company)}'")
+    if addr.get("street"):
+        L.append(f"    StreetAddress = '{_e(addr['street'])}'")
+    if addr.get("city"):
+        L.append(f"    City = '{_e(addr['city'])}'")
+    if addr.get("zip"):
+        L.append(f"    PostalCode = '{_e(addr['zip'])}'")
+    if addr.get("country"):
+        L.append(f"    Country = '{_e(addr['country'])}'")
+    if addr.get("webpage"):
+        L.append(f"    HomePage = '{_e(addr['webpage'])}'")
     L.append("}")
     if manager:
         L.append("if ($mgrDn) { $setParams['Manager'] = $mgrDn }")
@@ -110,12 +126,31 @@ def detect_domain(company: str) -> str:
             return domain
     return "girteka.eu"
 
+_LAISVES_ADDRESS = {
+    "street":  "Laisvės pr. 36",
+    "city":    "Vilnius",
+    "zip":     "5623",
+    "country": "LT",
+    "webpage": "www.girteka.eu",
+    "office":  "Vilnius",
+}
+
+_LAISVES_KEYWORDS = [
+    "gcc", "tndm", "girteka", "me trailer", "classtrucks",
+]
+
+def detect_company_address(company: str) -> dict:
+    c = company.lower()
+    if any(k in c for k in _LAISVES_KEYWORDS):
+        return _LAISVES_ADDRESS
+    return {}
+
 def build_email(first: str, last: str, domain: str) -> str:
-    f = _ascii(first).lower().strip()
-    l = _ascii(last).lower().strip()
+    f = _ascii(first).strip()
+    l = _ascii(last).strip()
     if domain == "tndmtrucking.com":
         return f"{f[0].upper()}{l.capitalize()}@{domain}"
-    return f"{f}.{l}@{domain}"
+    return f"{f.capitalize()}.{l.capitalize()}@{domain}"
 
 # ── Default AD groups ─────────────────────────────────────────────────────────
 
@@ -249,6 +284,8 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     manager  = _e(ticket.get("manager", ""))
     title    = _e(ticket.get("position", ""))
     office   = _e(ticket.get("office", ""))
+    company  = ticket.get("company_name", "")
+    address  = detect_company_address(company)
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -278,7 +315,7 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(username, email)
-    L += _set_user_attribute_lines(username, email, title, office, manager)
+    L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address)
     return "\n".join(L)
 
 
@@ -293,6 +330,8 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     manager = _e(ticket.get("manager", ""))
     title   = _e(ticket.get("position", ""))
     office  = _e(ticket.get("office", ""))
+    company = ticket.get("company_name", "")
+    address = detect_company_address(company)
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -336,7 +375,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(old_sam, email)
-    L += _set_user_attribute_lines(old_sam, email, title, office, manager)
+    L += _set_user_attribute_lines(old_sam, email, title, office, manager, _e(company), address)
     L += [""]
 
     L += [
@@ -363,6 +402,8 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
     manager = _e(ticket.get("manager", ""))
     title   = _e(ticket.get("position", ""))
     office  = _e(ticket.get("office", ""))
+    company = ticket.get("company_name", "")
+    address = detect_company_address(company)
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -395,7 +436,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(sam, email)
-    L += _set_user_attribute_lines(sam, email, title, office, manager)
+    L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address)
     L += [""]
 
     L += [
