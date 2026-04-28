@@ -427,15 +427,16 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
                                 groups: list[str], department: str = "",
                                 ext_attrs: dict = None) -> str:
     """
-    Rejoiner with two accounts: copy employeeID from SF -> old, restore old, delete SF dummy.
+    Rejoiner with two accounts.
+    SF dummy already has correct new employment data (Title, Description, Department,
+    Company, Manager, extensionAttribute5, extensionAttribute15) — read directly from it.
+    We fill the rest: email, location, extensionAttribute10/14, groups, password.
     """
     sf_sam  = _e(sf_account["username"])
     old_sam = _e(old_account["username"])
-    manager = _e(ticket.get("manager", ""))
-    title   = _e(ticket.get("position", ""))
-    office  = _e(ticket.get("office", ""))
-    company = ticket.get("company_name", "")
-    address = detect_company_address(company)
+    address = detect_company_address(ticket.get("company_name", ""))
+    ea14    = _e((ext_attrs or {}).get("extensionAttribute14", ""))
+    ext15   = address.get("ext15", "")
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -445,27 +446,33 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         "Import-Module ActiveDirectory -ErrorAction Stop",
         f'Write-Host "Processing REJOINER (dual account): restoring {old_account["username"]}"',
         "",
-    ]
-
-    L += _manager_lookup_lines(manager)
-
-    L += [
-        "# Copy employeeID from SF dummy account to old account",
-        f"$sfEmpID = (Get-ADUser -Identity '{sf_sam}' -Properties EmployeeID).EmployeeID",
-        f'Write-Host "EmployeeID from SF account: $sfEmpID"',
-        f"Set-ADUser -Identity '{old_sam}' -EmployeeID $sfEmpID",
-        'Write-Host "OK  EmployeeID copied"',
+        "# Read all new employment data from SF dummy",
+        f"$sf = Get-ADUser -Identity '{sf_sam}' -Properties EmployeeID,Title,Description,Department,Company,Manager,extensionAttribute5",
+        'Write-Host "SF data loaded — EmpID: $($sf.EmployeeID)  Title: $($sf.Title)"',
+        "",
+        "# Resolve manager email from SF dummy manager DN",
+        "$mgrEmail = $null",
+        "if ($sf.Manager) {",
+        "    try {",
+        "        $mgrEmail = (Get-ADUser -Identity $sf.Manager -Properties EmailAddress).EmailAddress",
+        '        Write-Host "Manager email: $mgrEmail"',
+        "    } catch {",
+        '        Write-Warning "Could not get manager email: $_"',
+        "    }",
+        "}",
+        "",
+        "# Copy EmployeeID to old account",
+        f"Set-ADUser -Identity '{old_sam}' -EmployeeID $sf.EmployeeID",
+        'Write-Host "OK  EmployeeID copied: $($sf.EmployeeID)"',
         "",
         "# Move old account to correct OU",
         f"$oldDN = (Get-ADUser -Identity '{old_sam}' -Properties DistinguishedName).DistinguishedName",
         f"Move-ADObject -Identity $oldDN -TargetPath '{_e(target_ou)}'",
         'Write-Host "OK  Account moved to correct OU"',
         "",
-        "# Enable old account",
+        "# Enable account and clear hide-from-address-list flag",
         f"Enable-ADAccount -Identity '{old_sam}'",
         'Write-Host "OK  Account enabled"',
-        "",
-        "# Clear msExchHideFromAddressLists",
         f"Set-ADUser -Identity '{old_sam}' -Clear msExchHideFromAddressLists",
         'Write-Host "OK  msExchHideFromAddressLists cleared"',
         "",
@@ -479,12 +486,71 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(old_sam, email)
-    L += _set_user_attribute_lines(old_sam, email, title, office, manager, _e(company), address, department)
-    L += build_ext_attr_lines(old_sam, ext_attrs or {})
-    L += [""]
+
+    # Set attributes — employment fields from SF dummy, location from address map
+    L += [
+        "# Update attributes: employment from SF dummy, location from address map",
+        "$setParams = @{",
+        f"    EmailAddress  = '{_e(email)}'",
+        "    Title         = $sf.Title",
+        "    Description   = $sf.Title",
+        "    Department    = $sf.Department",
+        "    Company       = $sf.Company",
+    ]
+    if address.get("office"):
+        L.append(f"    Office        = '{_e(address['office'])}'")
+    if address.get("street"):
+        L.append(f"    StreetAddress = '{_e(address['street'])}'")
+    if address.get("city"):
+        L.append(f"    City          = '{_e(address['city'])}'")
+    if address.get("zip"):
+        L.append(f"    PostalCode    = '{_e(address['zip'])}'")
+    if address.get("country"):
+        L.append(f"    Country       = '{_e(address['country'])}'")
+    L += [
+        "}",
+        "if ($sf.Manager) { $setParams['Manager'] = $sf.Manager }",
+        f"Set-ADUser -Identity '{old_sam}' @setParams",
+        'Write-Host "OK  Attributes updated"',
+        "",
+        "# Copy extensionAttribute5 from SF dummy (org hierarchy)",
+        "if ($sf.extensionAttribute5) {",
+        f"    Set-ADUser -Identity '{old_sam}' -Replace @{{extensionAttribute5=$sf.extensionAttribute5}}",
+        '    Write-Host "OK  extensionAttribute5: $($sf.extensionAttribute5)"',
+        "}",
+        "",
+        "# Set extensionAttribute10 (manager email)",
+        "if ($mgrEmail) {",
+        f"    Set-ADUser -Identity '{old_sam}' -Replace @{{extensionAttribute10=$mgrEmail}}",
+        '    Write-Host "OK  extensionAttribute10 set to $mgrEmail"',
+        "} else {",
+        '    Write-Warning "extensionAttribute10 not set — manager email not found"',
+        "}",
+        "",
+    ]
+
+    if ea14:
+        L += [
+            f"Set-ADUser -Identity '{old_sam}' -Replace @{{extensionAttribute14='{ea14}'}}",
+            'Write-Host "OK  extensionAttribute14 set"',
+            "",
+        ]
+
+    if ext15:
+        L += [
+            f"Set-ADUser -Identity '{old_sam}' -Replace @{{extensionAttribute15='{_e(ext15)}'}}",
+            f'Write-Host "OK  extensionAttribute15 set to {ext15}"',
+            "",
+        ]
+    else:
+        L += [
+            f"Set-ADUser -Identity '{old_sam}' -Clear extensionAttribute15",
+            'Write-Host "OK  extensionAttribute15 cleared"',
+            "",
+        ]
 
     L += [
-        "# Reset password on restored account",
+        "# Reset password",
         f"Set-ADAccountPassword -Identity '{old_sam}' -Reset `",
         f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
         f"Set-ADUser -Identity '{old_sam}' -ChangePasswordAtLogon $false",
