@@ -34,10 +34,12 @@ def _manager_lookup_lines(manager: str) -> list[str]:
         return []
     return [
         "$mgrDn = $null",
+        "$mgrEmail = $null",
         "try {",
-        f"    $mgrMatches = @(Get-ADUser -Filter {{DisplayName -eq '{manager}'}} -Properties DistinguishedName)",
+        f"    $mgrMatches = @(Get-ADUser -Filter {{DisplayName -eq '{manager}'}} -Properties DistinguishedName, EmailAddress)",
         "    if ($mgrMatches.Count -eq 1) {",
-        "        $mgrDn = $mgrMatches[0].DistinguishedName",
+        "        $mgrDn    = $mgrMatches[0].DistinguishedName",
+        "        $mgrEmail = $mgrMatches[0].EmailAddress",
         "    } elseif ($mgrMatches.Count -eq 0) {",
         f"        Write-Warning 'Manager not found: {manager}'",
         "    } else {",
@@ -110,6 +112,12 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
     L += [
         f"Set-ADUser -Identity '{sam}' @setParams",
         'Write-Host "OK  Attributes updated"',
+        "if ($mgrEmail) {",
+        f"    Set-ADUser -Identity '{sam}' -Replace @{{extensionAttribute10=$mgrEmail}}",
+        '    Write-Host "OK  extensionAttribute10 set to $mgrEmail"',
+        "} else {",
+        '    Write-Warning "extensionAttribute10 not set — manager email not found"',
+        "}",
     ]
     return L
 
