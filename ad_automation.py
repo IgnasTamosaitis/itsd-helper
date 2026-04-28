@@ -345,7 +345,6 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     extensionAttribute10 (manager email), extensionAttribute14 (buddy), password.
     """
     username = _e(sf_account["username"])
-    manager  = _e(ticket.get("manager", ""))
     address  = detect_company_address(ticket.get("company_name", ""))
 
     L = [
@@ -356,11 +355,18 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
         "Import-Module ActiveDirectory -ErrorAction Stop",
         f'Write-Host "Processing NEW JOINER: {sf_account["username"]}"',
         "",
-    ]
-
-    L += _manager_lookup_lines(manager)
-
-    L += [
+        "# Resolve manager email from SF account's Manager DN (SF already set this correctly)",
+        f"$sfMgrDn = (Get-ADUser -Identity '{username}' -Properties Manager).Manager",
+        "$mgrEmail = $null",
+        "if ($sfMgrDn) {",
+        "    try {",
+        "        $mgrEmail = (Get-ADUser -Identity $sfMgrDn -Properties EmailAddress).EmailAddress",
+        '        Write-Host "Manager email: $mgrEmail"',
+        "    } catch {",
+        '        Write-Warning "Could not get manager email: $_"',
+        "    }",
+        "}",
+        "",
         "# Move account from SF OU to correct OU",
         f"$userDN = (Get-ADUser -Identity '{username}' -Properties DistinguishedName).DistinguishedName",
         f"Move-ADObject -Identity $userDN -TargetPath '{_e(target_ou)}'",
