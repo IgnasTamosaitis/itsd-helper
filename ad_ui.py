@@ -449,10 +449,12 @@ class ADSetupWindow(tk.Toplevel):
                 for w in self._ext_attr_frame.winfo_children():
                     w.destroy()
                 self._ext_attr_vars = {}
-                _LABELS = {
-                    "extensionAttribute5":  "extensionAttribute5",
-                    "extensionAttribute14": "extensionAttribute14",
-                }
+                _LABELS = (
+                    {"extensionAttribute14": "extensionAttribute14"}
+                    if self._scenario == "new_joiner" else
+                    {"extensionAttribute5": "extensionAttribute5",
+                     "extensionAttribute14": "extensionAttribute14"}
+                )
                 any_value = False
                 for attr, label in _LABELS.items():
                     value = ext_attrs.get(attr, "")
