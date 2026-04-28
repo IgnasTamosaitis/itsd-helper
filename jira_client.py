@@ -48,8 +48,11 @@ _BUDDY_PATTERNS = [
     rf'(?:rights?|access(?:es)?)\s+(?:as|like)\s+{_BUDDY_VALUE}',
     # "use X as similar accesses", "use X as template", "use X as a base"
     rf'use\s+{_BUDDY_VALUE}\s+as\b',
-    # "the person X", "person is X"
+    # "the person X", "person is X", "person who is working in the similar job role – X"
     rf'(?:the\s+)?person\s+(?:is\s+)?{_BUDDY_VALUE}',
+    rf'person\s+who\s+.{{0,60}}[–\-]\s*{_BUDDY_VALUE}',
+    # "similar job role – X", "similar role – X"
+    rf'similar\s+(?:\w+\s+)?(?:job\s+)?role\s*[–\-]\s*{_BUDDY_VALUE}',
     # "it will be X", "will be X"
     rf'will\s+be\s+{_BUDDY_VALUE}',
     rf'copy\s+(?:rights?\s+)?from\s+{_BUDDY_VALUE}',
