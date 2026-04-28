@@ -119,6 +119,17 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
         '    Write-Warning "extensionAttribute10 not set — manager email not found"',
         "}",
     ]
+    ext15 = addr.get("ext15", "") if addr else ""
+    if ext15:
+        L += [
+            f"Set-ADUser -Identity '{sam}' -Replace @{{extensionAttribute15='{_e(ext15)}'}}",
+            f'Write-Host "OK  extensionAttribute15 set to {ext15}"',
+        ]
+    else:
+        L += [
+            f"Set-ADUser -Identity '{sam}' -Clear extensionAttribute15",
+            'Write-Host "OK  extensionAttribute15 cleared"',
+        ]
     return L
 
 # ── Location / domain detection ───────────────────────────────────────────────
@@ -153,6 +164,7 @@ _LAISVES_ADDRESS = {
     "country": "LT",
     "webpage": "www.girteka.eu",
     "office":  "Vilnius",
+    "ext15":   "SF",
 }
 
 _LAISVES_KEYWORDS = [
