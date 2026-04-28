@@ -339,15 +339,14 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
                              email: str, password: str, groups: list[str],
                              department: str = "", ext_attrs: dict = None) -> str:
     """
-    New joiner: one SF-provisioned account.
-    Steps: move to buddy OU -> add groups -> set proxyAddresses -> update org attributes -> reset password.
+    New joiner: SF already sets Title, Description, Department, Company, Office,
+    StreetAddress, Manager, EmployeeID, extensionAttribute5, extensionAttribute15.
+    We only fill the gaps: OU move, groups, email, City/PostalCode/Country,
+    extensionAttribute10 (manager email), extensionAttribute14 (buddy), password.
     """
     username = _e(sf_account["username"])
     manager  = _e(ticket.get("manager", ""))
-    title    = _e(ticket.get("position", ""))
-    office   = _e(ticket.get("office", ""))
-    company  = ticket.get("company_name", "")
-    address  = detect_company_address(company)
+    address  = detect_company_address(ticket.get("company_name", ""))
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -377,8 +376,42 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(username, email)
-    L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address, department)
-    L += build_ext_attr_lines(username, ext_attrs or {})
+
+    # Only set what SF leaves blank
+    L += [
+        "# Set email and location fields (SF does not provision these)",
+        "$setParams = @{",
+        f"    EmailAddress = '{_e(email)}'",
+    ]
+    if address.get("city"):
+        L.append(f"    City = '{_e(address['city'])}'")
+    if address.get("zip"):
+        L.append(f"    PostalCode = '{_e(address['zip'])}'")
+    if address.get("country"):
+        L.append(f"    Country = '{_e(address['country'])}'")
+    L += [
+        "}",
+        f"Set-ADUser -Identity '{username}' @setParams",
+        'Write-Host "OK  Email and location set"',
+        "",
+        "# Set manager email in extensionAttribute10",
+        "if ($mgrEmail) {",
+        f"    Set-ADUser -Identity '{username}' -Replace @{{extensionAttribute10=$mgrEmail}}",
+        '    Write-Host "OK  extensionAttribute10 set to $mgrEmail"',
+        "} else {",
+        '    Write-Warning "extensionAttribute10 not set — manager email not found"',
+        "}",
+        "",
+    ]
+
+    ea14 = (ext_attrs or {}).get("extensionAttribute14", "")
+    if ea14:
+        L += [
+            f"Set-ADUser -Identity '{username}' -Replace @{{extensionAttribute14='{_e(ea14)}'}}",
+            'Write-Host "OK  extensionAttribute14 set"',
+            "",
+        ]
+
     L += [
         "# Reset password",
         f"Set-ADAccountPassword -Identity '{username}' -Reset `",
