@@ -73,6 +73,10 @@ def _proxy_address_lines(sam: str, email: str) -> list[str]:
         '    Write-Host "OK  Lowercased $addr -> $lower"',
         "}",
         "",
+        "# Set targetAddress to match primary SMTP",
+        f"Set-ADUser -Identity '{sam}' -Replace @{{targetAddress='{_e(email)}'}}",
+        'Write-Host "OK  targetAddress set"',
+        "",
     ]
 
 
@@ -104,8 +108,6 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
         L.append(f"    PostalCode = '{_e(addr['zip'])}'")
     if addr.get("country"):
         L.append(f"    Country = '{_e(addr['country'])}'")
-    if addr.get("webpage"):
-        L.append(f"    HomePage = '{_e(addr['webpage'])}'")
     L.append("}")
     if manager:
         L.append("if ($mgrDn) { $setParams['Manager'] = $mgrDn }")
@@ -162,7 +164,6 @@ _LAISVES_ADDRESS = {
     "city":    "Vilnius",
     "zip":     "5623",
     "country": "LT",
-    "webpage": "www.girteka.eu",
     "office":  "Vilnius",
     "ext15":   "SF",
 }
