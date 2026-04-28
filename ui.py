@@ -45,6 +45,8 @@ class MainWindow(tk.Toplevel):
         self._buddy_fetched: set = set()
         self._buddy_box_frame: tk.Frame | None = None
         self._buddy_box_ticket: str | None = None
+        self._manual_buddies: set = set()  # ticket_ids with a persisted manual buddy
+        self._load_manual_buddies()
 
         self.title("ITSD Jira Helper")
         self.geometry("980x620")
@@ -367,6 +369,14 @@ class MainWindow(tk.Toplevel):
 
     # ── Buddy box ─────────────────────────────────────────────────────────────
 
+    def _load_manual_buddies(self):
+        for t in self.tickets:
+            sam = self.storage.get_manual_buddy(t["id"])
+            if sam:
+                self._buddy_hint[t["id"]] = {"name": sam, "author": "manual", "date": ""}
+                self._buddy_fetched.add(t["id"])
+                self._manual_buddies.add(t["id"])
+
     def _show_buddy_box(self, t: dict):
         tid = t["id"]
         frame = tk.Frame(self._detail, bg=SOFT_BLUE,
@@ -421,6 +431,8 @@ class MainWindow(tk.Toplevel):
             if not name:
                 return
             self._buddy_hint[ticket_id] = {"name": name, "author": "manual", "date": ""}
+            self._manual_buddies.add(ticket_id)
+            self.storage.set_manual_buddy(ticket_id, name)
             self._refresh_buddy_box(ticket_id, self._buddy_hint[ticket_id])
             self._update_ask_btn()
 
@@ -480,7 +492,10 @@ class MainWindow(tk.Toplevel):
         try:
             comments = self.jira.get_comments(issue_key)
             self._comments_cache[issue_key] = comments
-            buddy = extract_buddy_from_comments(comments)
+            if ticket_id in self._manual_buddies:
+                buddy = self._buddy_hint.get(ticket_id)
+            else:
+                buddy = extract_buddy_from_comments(comments)
             if buddy:
                 if is_sam_account(buddy["name"]):
                     try:

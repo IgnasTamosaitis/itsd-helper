@@ -65,6 +65,15 @@ class TaskStorage:
         self._data[f"__notes_{ticket_id}"] = text
         _save(TASKS_FILE, self._data)
 
+    # Manual buddy override
+
+    def get_manual_buddy(self, ticket_id: str) -> str:
+        return self._data.get(f"__buddy_{ticket_id}", "")
+
+    def set_manual_buddy(self, ticket_id: str, sam: str) -> None:
+        self._data[f"__buddy_{ticket_id}"] = sam
+        _save(TASKS_FILE, self._data)
+
     # AD setup summary
 
     def get_ad_setup(self, ticket_id: str) -> dict:
