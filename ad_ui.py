@@ -451,8 +451,8 @@ class ADSetupWindow(tk.Toplevel):
                 self._ext_attr_vars = {}
                 _LABELS = (
                     {"extensionAttribute14": "extensionAttribute14"}
-                    if self._scenario == "new_joiner" else
-                    {"extensionAttribute5": "extensionAttribute5",
+                    if self._scenario in ("new_joiner", "rejoiner_dual") else
+                    {"extensionAttribute5":  "extensionAttribute5",
                      "extensionAttribute14": "extensionAttribute14"}
                 )
                 any_value = False
