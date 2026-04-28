@@ -254,35 +254,60 @@ def classify_scenario(accounts: list[dict]) -> str:
     return "unknown"
 
 
-def get_buddy_info(sam: str) -> tuple[str, list[str], str, str]:
-    """Returns (ou, [group_names], error, department). On success error is empty string."""
+def get_buddy_info(sam: str) -> tuple[str, list[str], str, str, dict]:
+    """Returns (ou, [group_names], error, department, ext_attrs). On success error is empty string."""
     out, err, code = run_ps(f"""
 Import-Module ActiveDirectory -ErrorAction Stop
-$u = Get-ADUser -Identity '{_e(sam)}' -Properties MemberOf, DistinguishedName, Department -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties MemberOf, DistinguishedName, Department, `
+    extensionAttribute5, extensionAttribute14, extensionAttribute15 -ErrorAction Stop
 $ou = $u.DistinguishedName -replace '^CN=[^,]+,', ''
 "OU:$ou"
 "DEPT:$(if ($u.Department) {{ $u.Department }} else {{ '' }})"
+"EA5:$(if ($u.extensionAttribute5) {{ $u.extensionAttribute5 }} else {{ '' }})"
+"EA14:$(if ($u.extensionAttribute14) {{ $u.extensionAttribute14 }} else {{ '' }})"
+"EA15:$(if ($u.extensionAttribute15) {{ $u.extensionAttribute15 }} else {{ '' }})"
 foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
 """)
     if code != 0:
-        return "", [], (err or "User not found"), ""
+        return "", [], (err or "User not found"), "", {}
     ou, groups, department = "", [], ""
+    ext_attrs: dict[str, str] = {"extensionAttribute5": "", "extensionAttribute14": "", "extensionAttribute15": ""}
     for line in out.splitlines():
         if line.startswith("OU:"):
             ou = line[3:].strip()
         elif line.startswith("DEPT:"):
             department = line[5:].strip()
+        elif line.startswith("EA5:"):
+            ext_attrs["extensionAttribute5"] = line[4:].strip()
+        elif line.startswith("EA14:"):
+            ext_attrs["extensionAttribute14"] = line[5:].strip()
+        elif line.startswith("EA15:"):
+            ext_attrs["extensionAttribute15"] = line[5:].strip()
         elif line.startswith("GRP:"):
             g = line[4:].strip()
-            if "/O=" not in g:   # skip legacy Exchange distribution list entries
+            if "/O=" not in g:
                 groups.append(g)
-    return ou, sorted(groups), "", department
+    return ou, sorted(groups), "", department, ext_attrs
+
+def build_ext_attr_lines(sam: str, ext_attrs: dict) -> list[str]:
+    """Generates Set-ADUser -Replace for selected extensionAttributes."""
+    if not ext_attrs:
+        return []
+    pairs = "; ".join(f"{k}='{_e(v)}'" for k, v in ext_attrs.items() if v)
+    if not pairs:
+        return []
+    return [
+        "# Set extended attributes from buddy",
+        f"Set-ADUser -Identity '{sam}' -Replace @{{{pairs}}}",
+        'Write-Host "OK  Extended attributes set"',
+        "",
+    ]
 
 # ── Script builders ───────────────────────────────────────────────────────────
 
 def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
                              email: str, password: str, groups: list[str],
-                             department: str = "") -> str:
+                             department: str = "", ext_attrs: dict = None) -> str:
     """
     New joiner: one SF-provisioned account.
     Steps: move to buddy OU -> add groups -> set proxyAddresses -> update org attributes.
@@ -323,12 +348,14 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
 
     L += _proxy_address_lines(username, email)
     L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address, department)
+    L += build_ext_attr_lines(username, ext_attrs or {})
     return "\n".join(L)
 
 
 def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict,
                                 target_ou: str, email: str, password: str,
-                                groups: list[str], department: str = "") -> str:
+                                groups: list[str], department: str = "",
+                                ext_attrs: dict = None) -> str:
     """
     Rejoiner with two accounts: copy employeeID from SF -> old, restore old, delete SF dummy.
     """
@@ -383,6 +410,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
 
     L += _proxy_address_lines(old_sam, email)
     L += _set_user_attribute_lines(old_sam, email, title, office, manager, _e(company), address, department)
+    L += build_ext_attr_lines(old_sam, ext_attrs or {})
     L += [""]
 
     L += [
@@ -401,7 +429,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
 
 def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
                                   email: str, password: str, groups: list[str],
-                                  department: str = "") -> str:
+                                  department: str = "", ext_attrs: dict = None) -> str:
     """
     Rejoiner with only one disabled account (no SF duplicate).
     Steps: move -> enable -> clear hide flag -> groups -> attributes -> password.
@@ -445,6 +473,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
 
     L += _proxy_address_lines(sam, email)
     L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address, department)
+    L += build_ext_attr_lines(sam, ext_attrs or {})
     L += [""]
 
     L += [

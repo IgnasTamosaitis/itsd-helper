@@ -55,8 +55,10 @@ class ADSetupWindow(tk.Toplevel):
         self._old_accounts: list[dict] = []
         self._old_account_var = tk.StringVar()
 
-        # Buddy department (fetched alongside groups)
+        # Buddy department and extended attributes (fetched alongside groups)
         self._buddy_department: str = ""
+        self._buddy_ext_attrs: dict = {}
+        self._ext_attr_vars: dict[str, tk.BooleanVar] = {}
 
         # Groups state
         self._group_vars: dict[str, tk.BooleanVar] = {}
@@ -249,6 +251,13 @@ class ADSetupWindow(tk.Toplevel):
         self._btn(copy_row, "Add selected groups", self._copy_buddy_groups,
                   bg=GREEN, fg=WHITE).pack(side="left")
 
+        tk.Label(sec5, text="Extended attributes from buddy:",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 2))
+        self._ext_attr_frame = tk.Frame(sec5, bg=WHITE, relief="solid", bd=1)
+        self._ext_attr_frame.pack(fill="x", pady=(0, 4))
+        tk.Label(self._ext_attr_frame, text="  (fetch buddy first)",
+                 bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+
         # ── 6. Groups for new user ────────────────────────────────────────────
         sec6 = self._section(body, "6. Groups to add")
 
@@ -413,15 +422,17 @@ class ADSetupWindow(tk.Toplevel):
         self._buddy_status.config(text="Loading...", fg=GRAY)
 
         def _do():
-            ou, groups, err, department = get_buddy_info(sam)
+            ou, groups, err, department, ext_attrs = get_buddy_info(sam)
             def _update():
                 if err:
                     self._buddy_status.config(text=f"Error: {err}", fg=RED)
                     return
                 self._ou_var.set(ou)
                 self._buddy_department = department
+                self._buddy_ext_attrs = ext_attrs
                 dept_hint = f"  (dept: {department})" if department else ""
                 self._buddy_status.config(text=f"{len(groups)} groups found{dept_hint}", fg=GREEN)
+
                 for w in self._buddy_groups_frame.winfo_children():
                     w.destroy()
                 self._buddy_group_vars = {}
@@ -434,6 +445,36 @@ class ADSetupWindow(tk.Toplevel):
                     tk.Checkbutton(rf, text=g, variable=var,
                                    bg=WHITE, font=("Segoe UI", 9),
                                    anchor="w").pack(side="left", padx=12, pady=1)
+
+                for w in self._ext_attr_frame.winfo_children():
+                    w.destroy()
+                self._ext_attr_vars = {}
+                _LABELS = {
+                    "extensionAttribute5":  "extensionAttribute5",
+                    "extensionAttribute14": "extensionAttribute14",
+                    "extensionAttribute15": "extensionAttribute15",
+                }
+                any_value = False
+                for attr, label in _LABELS.items():
+                    value = ext_attrs.get(attr, "")
+                    row = tk.Frame(self._ext_attr_frame, bg=WHITE)
+                    row.pack(fill="x", padx=8, pady=2)
+                    var = tk.BooleanVar(value=bool(value))
+                    self._ext_attr_vars[attr] = var
+                    tk.Checkbutton(row, variable=var, bg=WHITE,
+                                   activebackground=WHITE).pack(side="left")
+                    tk.Label(row, text=f"{label}:", bg=WHITE, fg=GRAY,
+                             font=("Segoe UI", 9), width=20, anchor="w").pack(side="left")
+                    tk.Label(row, text=value or "(empty)", bg=WHITE,
+                             fg=TEXT if value else GRAY,
+                             font=("Segoe UI", 9, "italic" if not value else "normal"),
+                             anchor="w").pack(side="left", padx=4)
+                    if value:
+                        any_value = True
+                if not any_value:
+                    tk.Label(self._ext_attr_frame, text="  All extended attributes are empty on buddy",
+                             bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+
             self.after(0, _update)
         threading.Thread(target=_do, daemon=True).start()
 
@@ -510,20 +551,22 @@ class ADSetupWindow(tk.Toplevel):
             raise ValueError("Target OU is required.\nEnter a buddy username and click 'Fetch OU + Groups'.")
 
         dept = self._buddy_department
+        ext_attrs = {attr: self._buddy_ext_attrs.get(attr, "")
+                     for attr, var in self._ext_attr_vars.items() if var.get()}
         if self._scenario == "new_joiner":
             if not self._sf_account.get("username"):
                 raise ValueError("Temporary SF account was not detected. Search again before preparing changes.")
-            return build_new_joiner_script(self.ticket, self._sf_account, ou, email, password, groups, dept)
+            return build_new_joiner_script(self.ticket, self._sf_account, ou, email, password, groups, dept, ext_attrs)
         elif self._scenario == "rejoiner_dual":
             if not self._sf_account.get("username") or not self._old_account.get("username"):
                 raise ValueError("Both the temporary SF account and previous account are required.")
             return build_rejoiner_dual_script(
-                self.ticket, self._sf_account, self._old_account, ou, email, password, groups, dept)
+                self.ticket, self._sf_account, self._old_account, ou, email, password, groups, dept, ext_attrs)
         elif self._scenario == "rejoiner_single":
             if not self._accounts:
                 raise ValueError("No AD account is available for this rejoiner.")
             return build_rejoiner_single_script(
-                self.ticket, self._accounts[0], ou, email, password, groups, dept)
+                self.ticket, self._accounts[0], ou, email, password, groups, dept, ext_attrs)
         else:
             raise ValueError(f"Scenario '{self._scenario}' requires manual review before changes can be prepared.")
 
