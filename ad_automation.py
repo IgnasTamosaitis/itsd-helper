@@ -319,6 +319,48 @@ foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
                 groups.append(g)
     return ou, sorted(groups), "", department, ext_attrs
 
+def get_account_groups(sam: str) -> tuple[list[str], str]:
+    """Returns ([group_names], error) for any account."""
+    out, err, code = run_ps(f"""
+Import-Module ActiveDirectory -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties MemberOf -ErrorAction Stop
+foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
+""")
+    if code != 0:
+        return [], (err or "User not found")
+    groups = []
+    for line in out.splitlines():
+        if line.startswith("GRP:"):
+            g = line[4:].strip()
+            if "/O=" not in g:
+                groups.append(g)
+    return sorted(groups), ""
+
+
+def build_verification_script(sam: str) -> str:
+    """Returns a PS script that fetches and displays key attributes for verification."""
+    return f"""
+Import-Module ActiveDirectory -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties Title,Description,Department,Company,Office,EmailAddress,Manager,extensionAttribute5,extensionAttribute10,extensionAttribute14,extensionAttribute15,targetAddress,proxyAddresses,Enabled -ErrorAction Stop
+$mgrName = if ($u.Manager) {{ $u.Manager -replace '^CN=([^,]+),.+$','$1' }} else {{ '' }}
+Write-Host "=== Verification: $($u.SamAccountName) ==="
+Write-Host "Enabled:              $($u.Enabled)"
+Write-Host "Title:                $($u.Title)"
+Write-Host "Description:          $($u.Description)"
+Write-Host "Department:           $($u.Department)"
+Write-Host "Company:              $($u.Company)"
+Write-Host "Office:               $($u.Office)"
+Write-Host "EmailAddress:         $($u.EmailAddress)"
+Write-Host "Manager:              $mgrName"
+Write-Host "extensionAttribute5:  $($u.extensionAttribute5)"
+Write-Host "extensionAttribute10: $($u.extensionAttribute10)"
+Write-Host "extensionAttribute14: $($u.extensionAttribute14)"
+Write-Host "extensionAttribute15: $($u.extensionAttribute15)"
+Write-Host "targetAddress:        $($u.targetAddress)"
+Write-Host "proxyAddresses:       $($u.proxyAddresses -join ' | ')"
+""".strip()
+
+
 def build_ext_attr_lines(sam: str, ext_attrs: dict) -> list[str]:
     """Generates Set-ADUser -Replace for selected extensionAttributes."""
     if not ext_attrs:

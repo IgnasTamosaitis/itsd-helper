@@ -10,7 +10,7 @@ from datetime import datetime
 from ad_automation import (
     detect_location, detect_domain, build_email, DEFAULT_GROUPS,
     generate_password, find_user_accounts, classify_scenario,
-    get_buddy_info,
+    get_buddy_info, get_account_groups, build_verification_script,
     build_new_joiner_script, build_rejoiner_dual_script,
     build_rejoiner_single_script, run_ps,
 )
@@ -59,6 +59,7 @@ class ADSetupWindow(tk.Toplevel):
         self._buddy_department: str = ""
         self._buddy_ext_attrs: dict = {}
         self._ext_attr_vars: dict[str, tk.BooleanVar] = {}
+        self._stale_group_vars: dict[str, tk.BooleanVar] = {}
 
         # Groups state
         self._group_vars: dict[str, tk.BooleanVar] = {}
@@ -168,6 +169,14 @@ class ADSetupWindow(tk.Toplevel):
                       "Rejoiner: the previous account is restored; the temporary SF account is removed.",
                  bg=BG, fg=GRAY, font=("Segoe UI", 8), justify="left").pack(anchor="w")
 
+        self._rejoiner_single_warning = tk.Label(
+            sec2,
+            text="⚠  Rejoiner single — no SF dummy account exists. All employment data comes from the "
+                 "Jira ticket. Verify position, company, and manager are correct before applying.",
+            bg="#FFF4E5", fg="#B76E00", font=("Segoe UI", 9, "bold"),
+            wraplength=760, justify="left", anchor="w", padx=8, pady=6)
+        # shown only when scenario is rejoiner_single
+
         # ── 3. Account username (filled after search) ─────────────────────────
         sec3 = self._section(body, "3. Account to use")
 
@@ -258,6 +267,21 @@ class ADSetupWindow(tk.Toplevel):
         tk.Label(self._ext_attr_frame, text="  (fetch buddy first)",
                  bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
 
+        self._stale_section = tk.Frame(sec5, bg=BG)
+        tk.Label(self._stale_section, text="Stale groups on old account (not on buddy):",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 2))
+        self._stale_groups_frame = tk.Frame(self._stale_section, bg=WHITE, relief="solid", bd=1)
+        self._stale_groups_frame.pack(fill="x", pady=(0, 4))
+        stale_btn_row = tk.Frame(self._stale_section, bg=BG)
+        stale_btn_row.pack(anchor="w")
+        self._btn(stale_btn_row, "Select all",  lambda: [v.set(True)  for v in self._stale_group_vars.values()],
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 6))
+        self._btn(stale_btn_row, "Clear",       lambda: [v.set(False) for v in self._stale_group_vars.values()],
+                  bg=SOFT_BLUE, fg=ACCENT).pack(side="left", padx=(0, 6))
+        self._btn(stale_btn_row, "Remove selected from old account", self._remove_stale_groups,
+                  bg="#C9372C", fg=WHITE).pack(side="left")
+        # hidden until buddy is fetched for a rejoiner
+
         # ── 6. Groups for new user ────────────────────────────────────────────
         sec6 = self._section(body, "6. Groups to add")
 
@@ -347,6 +371,12 @@ class ADSetupWindow(tk.Toplevel):
         label_text, color = SCENARIO_LABELS.get(scenario, ("UNKNOWN", RED))
         self._scenario_label.config(text=label_text, fg=color)
 
+        # Show/hide rejoiner_single warning
+        if scenario == "rejoiner_single":
+            self._rejoiner_single_warning.pack(fill="x", pady=(6, 0))
+        else:
+            self._rejoiner_single_warning.pack_forget()
+
         # Build summary text
         if not accounts:
             summary = "No accounts found. Check the name spelling."
@@ -423,6 +453,18 @@ class ADSetupWindow(tk.Toplevel):
 
         def _do():
             ou, groups, err, department, ext_attrs = get_buddy_info(sam)
+
+            # For rejoiners, fetch old account groups to compute stale ones
+            stale_groups: list[str] = []
+            if self._scenario in ("rejoiner_dual", "rejoiner_single") and not err:
+                old_sam = (self._old_account.get("username")
+                           if self._scenario == "rejoiner_dual"
+                           else (self._accounts[0].get("username") if self._accounts else ""))
+                if old_sam:
+                    old_groups, _ = get_account_groups(old_sam)
+                    buddy_set = set(groups)
+                    stale_groups = [g for g in old_groups if g not in buddy_set]
+
             def _update():
                 if err:
                     self._buddy_status.config(text=f"Error: {err}", fg=RED)
@@ -475,6 +517,29 @@ class ADSetupWindow(tk.Toplevel):
                 if not any_value:
                     tk.Label(self._ext_attr_frame, text="  All extended attributes are empty on buddy",
                              bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+
+                # Stale groups section
+                for w in self._stale_groups_frame.winfo_children():
+                    w.destroy()
+                self._stale_group_vars = {}
+                if self._scenario in ("rejoiner_dual", "rejoiner_single"):
+                    self._stale_section.pack(fill="x", pady=(4, 0))
+                    if stale_groups:
+                        for i, g in enumerate(stale_groups):
+                            var = tk.BooleanVar(value=False)
+                            self._stale_group_vars[g] = var
+                            if i % 2 == 0:
+                                rf = tk.Frame(self._stale_groups_frame, bg=WHITE)
+                                rf.pack(fill="x")
+                            tk.Checkbutton(rf, text=g, variable=var,
+                                           bg=WHITE, font=("Segoe UI", 9),
+                                           anchor="w").pack(side="left", padx=12, pady=1)
+                    else:
+                        tk.Label(self._stale_groups_frame,
+                                 text="  No stale groups — old account matches buddy",
+                                 bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+                else:
+                    self._stale_section.pack_forget()
 
             self.after(0, _update)
         threading.Thread(target=_do, daemon=True).start()
@@ -654,6 +719,46 @@ class ADSetupWindow(tk.Toplevel):
         self._set_text(self._output_box, text)
         if status != "Not completed":
             self._mark_setup_completed(status)
+        sam = self._username_var.get().strip()
+        if sam:
+            self._run_status.config(text=f"{status}  —  verifying...", fg=color)
+            threading.Thread(target=self._run_verification, args=(sam, text, color), daemon=True).start()
+
+    def _run_verification(self, sam: str, existing_output: str, color: str):
+        out, err, _ = run_ps(build_verification_script(sam), timeout=30)
+        verification = out or err or "Verification returned no output."
+        full = existing_output + "\n\n─────────────────────────────\n" + verification
+        def _update():
+            self._set_text(self._output_box, full)
+            self._run_status.config(
+                text=self._run_status.cget("text").replace("  —  verifying...", ""), fg=color)
+        self.after(0, _update)
+
+    def _remove_stale_groups(self):
+        selected = [g for g, v in self._stale_group_vars.items() if v.get()]
+        if not selected:
+            messagebox.showinfo("Nothing selected", "Tick some stale groups first.", parent=self)
+            return
+        sam = self._username_var.get().strip()
+        if not sam:
+            return
+        if not messagebox.askyesno(
+            "Confirm group removal",
+            f"Remove {len(selected)} group(s) from {sam}?\n\n" + "\n".join(selected),
+            parent=self,
+        ):
+            return
+        lines = ["Import-Module ActiveDirectory -ErrorAction Stop"]
+        for g in selected:
+            from ad_automation import _e
+            lines.append(
+                f"try {{ Remove-ADGroupMember -Identity '{_e(g)}' -Members '{_e(sam)}' -Confirm:$false; "
+                f'Write-Host "OK  Removed from {_e(g)}" }} '
+                f"catch {{ Write-Warning \"Failed to remove from '{_e(g)}': $_\" }}"
+            )
+        out, err, code = run_ps("\n".join(lines), timeout=60)
+        result = (out or "") + ("\n" + err if err else "")
+        messagebox.showinfo("Group removal result", result or "Done.", parent=self)
 
     def _mark_setup_completed(self, status: str):
         if not self.storage:
