@@ -380,7 +380,7 @@ class MainWindow(tk.Toplevel):
             if buddy:
                 self._fill_buddy_box(frame, buddy)
             else:
-                self._draw_buddy_no_result(frame)
+                self._draw_buddy_no_result(frame, tid)
         else:
             tk.Label(frame, text="Scanning comments for buddy info…",
                      bg=SOFT_BLUE, fg=GRAY,
@@ -394,18 +394,40 @@ class MainWindow(tk.Toplevel):
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
         tk.Label(frame, text=buddy["name"], bg=SOFT_BLUE, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
-        tk.Label(frame, text=f"From comment by {buddy['author']}  •  {buddy['date']}",
-                 bg=SOFT_BLUE, fg=GRAY,
+        source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
+        tk.Label(frame, text=source, bg=SOFT_BLUE, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 8))
 
-    def _draw_buddy_no_result(self, frame: tk.Frame):
+    def _draw_buddy_no_result(self, frame: tk.Frame, ticket_id: str):
         for w in frame.winfo_children():
             w.destroy()
         frame.configure(bg="#FFF4E5", highlightbackground="#FF991F")
         tk.Label(frame,
                  text="Buddy not mentioned in comments — consider asking the reporter",
                  bg="#FFF4E5", fg="#B76E00",
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=6)
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(6, 2))
+
+        entry_row = tk.Frame(frame, bg="#FFF4E5")
+        entry_row.pack(anchor="w", padx=10, pady=(0, 6))
+        tk.Label(entry_row, text="Manual buddy:", bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9)).pack(side="left")
+        buddy_var = tk.StringVar()
+        entry = tk.Entry(entry_row, textvariable=buddy_var, font=("Consolas", 10),
+                         relief="solid", bd=1, width=14)
+        entry.pack(side="left", padx=6, ipady=2)
+
+        def _set_manual():
+            name = buddy_var.get().strip()
+            if not name:
+                return
+            self._buddy_hint[ticket_id] = {"name": name, "author": "manual", "date": ""}
+            self._refresh_buddy_box(ticket_id, self._buddy_hint[ticket_id])
+            self._update_ask_btn()
+
+        tk.Button(entry_row, text="Set as buddy", command=_set_manual,
+                  relief="flat", bd=0, bg="#FF991F", fg=WHITE,
+                  font=("Segoe UI", 9), padx=8, pady=2, cursor="hand2").pack(side="left")
+        entry.bind("<Return>", lambda _: _set_manual())
 
     def _refresh_buddy_box(self, ticket_id: str, buddy: dict | None):
         if self._buddy_box_ticket != ticket_id or not self._buddy_box_frame:
@@ -418,7 +440,7 @@ class MainWindow(tk.Toplevel):
         if buddy:
             self._fill_buddy_box(self._buddy_box_frame, buddy)
         else:
-            self._draw_buddy_no_result(self._buddy_box_frame)
+            self._draw_buddy_no_result(self._buddy_box_frame, ticket_id)
         self._update_ask_btn()
 
     # ── Ask reporter ──────────────────────────────────────────────────────────
