@@ -55,6 +55,9 @@ class ADSetupWindow(tk.Toplevel):
         self._old_accounts: list[dict] = []
         self._old_account_var = tk.StringVar()
 
+        # Buddy department (fetched alongside groups)
+        self._buddy_department: str = ""
+
         # Groups state
         self._group_vars: dict[str, tk.BooleanVar] = {}
         self._buddy_group_vars: dict[str, tk.BooleanVar] = {}
@@ -410,13 +413,15 @@ class ADSetupWindow(tk.Toplevel):
         self._buddy_status.config(text="Loading...", fg=GRAY)
 
         def _do():
-            ou, groups, err = get_buddy_info(sam)
+            ou, groups, err, department = get_buddy_info(sam)
             def _update():
                 if err:
                     self._buddy_status.config(text=f"Error: {err}", fg=RED)
                     return
                 self._ou_var.set(ou)
-                self._buddy_status.config(text=f"{len(groups)} groups found", fg=GREEN)
+                self._buddy_department = department
+                dept_hint = f"  (dept: {department})" if department else ""
+                self._buddy_status.config(text=f"{len(groups)} groups found{dept_hint}", fg=GREEN)
                 for w in self._buddy_groups_frame.winfo_children():
                     w.destroy()
                 self._buddy_group_vars = {}
@@ -504,20 +509,21 @@ class ADSetupWindow(tk.Toplevel):
         if not ou:
             raise ValueError("Target OU is required.\nEnter a buddy username and click 'Fetch OU + Groups'.")
 
+        dept = self._buddy_department
         if self._scenario == "new_joiner":
             if not self._sf_account.get("username"):
                 raise ValueError("Temporary SF account was not detected. Search again before preparing changes.")
-            return build_new_joiner_script(self.ticket, self._sf_account, ou, email, password, groups)
+            return build_new_joiner_script(self.ticket, self._sf_account, ou, email, password, groups, dept)
         elif self._scenario == "rejoiner_dual":
             if not self._sf_account.get("username") or not self._old_account.get("username"):
                 raise ValueError("Both the temporary SF account and previous account are required.")
             return build_rejoiner_dual_script(
-                self.ticket, self._sf_account, self._old_account, ou, email, password, groups)
+                self.ticket, self._sf_account, self._old_account, ou, email, password, groups, dept)
         elif self._scenario == "rejoiner_single":
             if not self._accounts:
                 raise ValueError("No AD account is available for this rejoiner.")
             return build_rejoiner_single_script(
-                self.ticket, self._accounts[0], ou, email, password, groups)
+                self.ticket, self._accounts[0], ou, email, password, groups, dept)
         else:
             raise ValueError(f"Scenario '{self._scenario}' requires manual review before changes can be prepared.")
 

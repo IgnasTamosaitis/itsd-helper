@@ -67,7 +67,8 @@ def _proxy_address_lines(sam: str, email: str) -> list[str]:
 
 def _set_user_attribute_lines(sam: str, email: str, title: str,
                               office: str, manager: str,
-                              company: str = "", address: dict = None) -> list[str]:
+                              company: str = "", address: dict = None,
+                              department: str = "") -> list[str]:
     addr = address or {}
     effective_office = addr.get("office") or office
     L = [
@@ -80,6 +81,8 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
         L.append(f"    Description = '{title}'")
     if effective_office:
         L.append(f"    Office = '{_e(effective_office)}'")
+    if department:
+        L.append(f"    Department = '{_e(department)}'")
     if company:
         L.append(f"    Company = '{_e(company)}'")
     if addr.get("street"):
@@ -251,31 +254,35 @@ def classify_scenario(accounts: list[dict]) -> str:
     return "unknown"
 
 
-def get_buddy_info(sam: str) -> tuple[str, list[str], str]:
-    """Returns (ou, [group_names], error). On success error is empty string."""
+def get_buddy_info(sam: str) -> tuple[str, list[str], str, str]:
+    """Returns (ou, [group_names], error, department). On success error is empty string."""
     out, err, code = run_ps(f"""
 Import-Module ActiveDirectory -ErrorAction Stop
-$u = Get-ADUser -Identity '{_e(sam)}' -Properties MemberOf, DistinguishedName -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties MemberOf, DistinguishedName, Department -ErrorAction Stop
 $ou = $u.DistinguishedName -replace '^CN=[^,]+,', ''
 "OU:$ou"
+"DEPT:$(if ($u.Department) {{ $u.Department }} else {{ '' }})"
 foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
 """)
     if code != 0:
-        return "", [], (err or "User not found")
-    ou, groups = "", []
+        return "", [], (err or "User not found"), ""
+    ou, groups, department = "", [], ""
     for line in out.splitlines():
         if line.startswith("OU:"):
             ou = line[3:].strip()
+        elif line.startswith("DEPT:"):
+            department = line[5:].strip()
         elif line.startswith("GRP:"):
             g = line[4:].strip()
             if "/O=" not in g:   # skip legacy Exchange distribution list entries
                 groups.append(g)
-    return ou, sorted(groups), ""
+    return ou, sorted(groups), "", department
 
 # ── Script builders ───────────────────────────────────────────────────────────
 
 def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
-                             email: str, password: str, groups: list[str]) -> str:
+                             email: str, password: str, groups: list[str],
+                             department: str = "") -> str:
     """
     New joiner: one SF-provisioned account.
     Steps: move to buddy OU -> add groups -> set proxyAddresses -> update org attributes.
@@ -315,13 +322,13 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(username, email)
-    L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address)
+    L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address, department)
     return "\n".join(L)
 
 
 def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict,
                                 target_ou: str, email: str, password: str,
-                                groups: list[str]) -> str:
+                                groups: list[str], department: str = "") -> str:
     """
     Rejoiner with two accounts: copy employeeID from SF -> old, restore old, delete SF dummy.
     """
@@ -375,7 +382,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(old_sam, email)
-    L += _set_user_attribute_lines(old_sam, email, title, office, manager, _e(company), address)
+    L += _set_user_attribute_lines(old_sam, email, title, office, manager, _e(company), address, department)
     L += [""]
 
     L += [
@@ -393,7 +400,8 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
 
 
 def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
-                                  email: str, password: str, groups: list[str]) -> str:
+                                  email: str, password: str, groups: list[str],
+                                  department: str = "") -> str:
     """
     Rejoiner with only one disabled account (no SF duplicate).
     Steps: move -> enable -> clear hide flag -> groups -> attributes -> password.
@@ -436,7 +444,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _proxy_address_lines(sam, email)
-    L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address)
+    L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address, department)
     L += [""]
 
     L += [
