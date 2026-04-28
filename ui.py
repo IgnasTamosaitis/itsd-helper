@@ -481,13 +481,28 @@ class MainWindow(tk.Toplevel):
             comments = self.jira.get_comments(issue_key)
             self._comments_cache[issue_key] = comments
             buddy = extract_buddy_from_comments(comments)
-            if buddy and is_sam_account(buddy["name"]):
-                try:
-                    from ad_automation import sam_exists
-                    if not sam_exists(buddy["name"]):
+            if buddy:
+                if is_sam_account(buddy["name"]):
+                    try:
+                        from ad_automation import sam_exists
+                        if not sam_exists(buddy["name"]):
+                            buddy = None
+                    except Exception:
                         buddy = None
-                except Exception:
-                    buddy = None
+                else:
+                    # Full name found — resolve to SAM via AD search
+                    try:
+                        from ad_automation import find_user_accounts
+                        parts = buddy["name"].split()
+                        accounts = find_user_accounts(parts[0], parts[-1])
+                        enabled = [a for a in accounts if a["enabled"]]
+                        match = (enabled or accounts)
+                        if match:
+                            buddy = {**buddy, "name": match[0]["username"]}
+                        else:
+                            buddy = None
+                    except Exception:
+                        buddy = None
             self._buddy_hint[ticket_id] = buddy
             self._buddy_fetched.add(ticket_id)
             self.after(0, lambda: self._populate_comments(box, comments))
