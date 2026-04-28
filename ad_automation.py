@@ -340,7 +340,7 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
                              department: str = "", ext_attrs: dict = None) -> str:
     """
     New joiner: one SF-provisioned account.
-    Steps: move to buddy OU -> add groups -> set proxyAddresses -> update org attributes.
+    Steps: move to buddy OU -> add groups -> set proxyAddresses -> update org attributes -> reset password.
     """
     username = _e(sf_account["username"])
     manager  = _e(ticket.get("manager", ""))
@@ -379,6 +379,13 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     L += _proxy_address_lines(username, email)
     L += _set_user_attribute_lines(username, email, title, office, manager, _e(company), address, department)
     L += build_ext_attr_lines(username, ext_attrs or {})
+    L += [
+        "# Reset password",
+        f"Set-ADAccountPassword -Identity '{username}' -Reset `",
+        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
+        f"Set-ADUser -Identity '{username}' -ChangePasswordAtLogon $false",
+        'Write-Host "OK  Password reset"',
+    ]
     return "\n".join(L)
 
 
