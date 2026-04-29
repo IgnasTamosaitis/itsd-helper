@@ -56,6 +56,7 @@ class App:
 
         self._ui_queue: queue.Queue = queue.Queue()
         self._tickets: list[dict] = []
+        self._tickets_lock = threading.Lock()
         self._window: MainWindow | None = None
         self._jira: JiraClient | None = None
         self._storage = TaskStorage()
@@ -117,7 +118,8 @@ class App:
                 self._config.get("jql", ""),
                 self._config.get("date_field", "customfield_10980"),
             )
-            self._tickets = tickets
+            with self._tickets_lock:
+                self._tickets = tickets
             self._ui_queue.put(("update_tickets", tickets))
             self._send_per_ticket_notifications(tickets)
         except Exception as e:
@@ -166,17 +168,21 @@ class App:
         # Fetch fresh data at summary time
         if self._jira:
             try:
-                self._tickets = self._jira.get_new_joiner_tickets(
+                tickets = self._jira.get_new_joiner_tickets(
                     self._config.get("jql", ""),
                     self._config.get("date_field", "customfield_10980"),
                 )
-                self._ui_queue.put(("update_tickets", self._tickets))
+                with self._tickets_lock:
+                    self._tickets = tickets
+                self._ui_queue.put(("update_tickets", tickets))
             except Exception:
                 pass
 
         today        = date.today()
+        with self._tickets_lock:
+            tickets_snapshot = list(self._tickets)
         week_tickets = [
-            t for t in self._tickets
+            t for t in tickets_snapshot
             if t.get("start_date") and 0 <= (t["start_date"] - today).days <= 7
         ]
 

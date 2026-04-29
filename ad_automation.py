@@ -226,7 +226,7 @@ def run_ps(script: str, timeout: int = 90) -> tuple[str, str, int]:
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0
     r = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
+        ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-Command", script],
         capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
         creationflags=creationflags,
