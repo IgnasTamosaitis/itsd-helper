@@ -3,6 +3,7 @@ import tkinter as tk
 from tkinter import messagebox
 import webbrowser
 from datetime import date
+import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
 
@@ -46,7 +47,6 @@ class MainWindow(tk.Toplevel):
         self._buddy_box_frame: tk.Frame | None = None
         self._buddy_box_ticket: str | None = None
         self._manual_buddies: set = set()        # ticket_ids with a persisted manual buddy
-        self._dismissed_buddies: set = set()     # disabled buddies the user has cleared
         self._dismissed_buddy_names: dict = {}   # ticket_id -> display name of cleared buddy
         self._load_manual_buddies()
         self._load_dismissed_buddies()
@@ -310,7 +310,13 @@ class MainWindow(tk.Toplevel):
         comments_sb.grid(row=0, column=1, sticky="ns")
 
         if t["key"] in self._comments_cache:
-            self._populate_comments(comments_box, self._comments_cache[t["key"]])
+            cached_comments = self._comments_cache[t["key"]]
+            self._populate_comments(comments_box, cached_comments)
+            if t["id"] not in self._buddy_fetched:
+                buddy = self._resolve_buddy_from_comments(t["id"], cached_comments)
+                self._buddy_hint[t["id"]] = buddy
+                self._buddy_fetched.add(t["id"])
+                self._refresh_buddy_box(t["id"], buddy)
         else:
             self._set_comments_text(comments_box, "Loading…")
             threading.Thread(
@@ -387,12 +393,7 @@ class MainWindow(tk.Toplevel):
                 continue  # manual buddy was set after dismissal — it wins
             name = self.storage.get_dismissed_buddy(tid)
             if name:
-                self._dismissed_buddies.add(tid)
-                self._dismissed_buddy_names[tid] = name
-                # Pre-mark as fetched with no buddy so the box renders correctly
-                # without waiting for comments to load
-                self._buddy_hint[tid] = None
-                self._buddy_fetched.add(tid)
+                self._dismissed_buddy_names[tid] = unicodedata.normalize("NFC", name)
 
     def _show_buddy_box(self, t: dict):
         tid = t["id"]
@@ -547,10 +548,11 @@ class MainWindow(tk.Toplevel):
         if buddy:
             name = buddy.get("display_name") or buddy.get("name", "")
             if name:
-                self._dismissed_buddy_names[ticket_id] = name
-                self.storage.set_dismissed_buddy(ticket_id, name)
+                normalized = unicodedata.normalize("NFC", name)
+                self._dismissed_buddy_names[ticket_id] = normalized
+                self.storage.set_dismissed_buddy(ticket_id, normalized)
         self._buddy_hint[ticket_id] = None
-        self._dismissed_buddies.add(ticket_id)
+        self._buddy_fetched.discard(ticket_id)
         self._manual_buddies.discard(ticket_id)
         self.storage.set_manual_buddy(ticket_id, "")  # clear any persisted manual buddy
         self._refresh_buddy_box(ticket_id, None)
@@ -587,7 +589,6 @@ class MainWindow(tk.Toplevel):
 
     def _set_manual_buddy(self, ticket_id: str, buddy_data: dict, keep_source: bool = True):
         # Clear any prior dismissed-buddy state so the new buddy isn't blocked.
-        self._dismissed_buddies.discard(ticket_id)
         self._dismissed_buddy_names.pop(ticket_id, None)
         self.storage.set_dismissed_buddy(ticket_id, "")
 
@@ -679,12 +680,7 @@ class MainWindow(tk.Toplevel):
         try:
             comments = self.jira.get_comments(issue_key)
             self._comments_cache[issue_key] = comments
-            if ticket_id in self._dismissed_buddies:
-                buddy = None
-            elif ticket_id in self._manual_buddies:
-                buddy = self._buddy_hint.get(ticket_id)
-            else:
-                buddy = self._resolve_detected_buddies(extract_buddies_from_comments(comments))
+            buddy = self._resolve_buddy_from_comments(ticket_id, comments)
             self._buddy_hint[ticket_id] = buddy
             self._buddy_fetched.add(ticket_id)
             self.after(0, lambda: self._populate_comments(box, comments))
@@ -692,15 +688,27 @@ class MainWindow(tk.Toplevel):
         except Exception as e:
             self.after(0, lambda: self._set_comments_text(box, f"Could not load comments: {e}"))
 
-    def _resolve_detected_buddies(self, detected: list[dict]) -> dict | None:
+    def _resolve_buddy_from_comments(self, ticket_id: str, comments: list[dict]) -> dict | None:
+        if ticket_id in self._manual_buddies:
+            return self._buddy_hint.get(ticket_id)
+        return self._resolve_detected_buddies(
+            ticket_id, extract_buddies_from_comments(comments)
+        )
+
+    def _resolve_detected_buddies(self, ticket_id: str, detected: list[dict]) -> dict | None:
         if not detected:
             return None
 
+        dismissed = unicodedata.normalize(
+            "NFC", self._dismissed_buddy_names.get(ticket_id, "")
+        )
         resolved: list[dict] = []
         seen: set[str] = set()
         for candidate in detected:
             resolved_candidate = self._resolve_detected_buddy(candidate)
             if not resolved_candidate:
+                continue
+            if dismissed and self._buddy_matches_dismissed(resolved_candidate, dismissed):
                 continue
             key = resolved_candidate["name"].lower()
             if key in seen:
@@ -720,9 +728,22 @@ class MainWindow(tk.Toplevel):
         }
 
     @staticmethod
+    def _buddy_matches_dismissed(candidate: dict, dismissed_name: str) -> bool:
+        dismissed_folded = dismissed_name.casefold()
+        names = {
+            unicodedata.normalize("NFC", candidate.get("name", "")).casefold(),
+            unicodedata.normalize("NFC", candidate.get("display_name", "")).casefold(),
+        }
+        return dismissed_folded in names
+
+    @staticmethod
     def _resolve_detected_buddy(candidate: dict) -> dict | None:
         try:
-            from ad_automation import find_user_accounts, get_account_enabled_status, DISABLED_OU_FRAGMENT
+            from ad_automation import (
+                DISABLED_OU_FRAGMENT,
+                find_user_accounts_by_name,
+                get_account_enabled_status,
+            )
         except Exception:
             return None
 
@@ -740,13 +761,9 @@ class MainWindow(tk.Toplevel):
                 "display_name": display_name or candidate["name"],
             }
 
-        original_name = candidate["name"]
-        parts = original_name.split()
-        if len(parts) < 2:
-            return None
-
         try:
-            accounts = find_user_accounts(parts[0], parts[-1])
+            original_name = unicodedata.normalize("NFC", candidate["name"])
+            accounts = find_user_accounts_by_name(original_name)
         except Exception:
             return None
 
