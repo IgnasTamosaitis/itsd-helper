@@ -99,7 +99,7 @@ _CF_PHONE        = "customfield_10113"   # Phone Number (new joiner's phone)
 _CF_COMPANY_NAME = "customfield_10976"   # Company's name
 
 _BASE_FETCH_FIELDS = [
-    "summary", "status",
+    "summary", "status", "reporter",
     _CF_FIRST_NAME, _CF_LAST_NAME,
     _CF_POSITION, _CF_OFFICE, _CF_MANAGER, _CF_REJOINER,
     _CF_PHONE, _CF_COMPANY_NAME,
@@ -154,18 +154,58 @@ class JiraClient:
                 comments.append({"author": author, "created": created, "body": body})
         return comments
 
-    def post_comment(self, issue_key: str, text: str) -> None:
-        """Post a plain-text comment to a Jira issue (converted to ADF)."""
+    def search_user(self, query: str) -> dict | None:
+        """Search Jira for a user by display name. Returns {id, text} for the first
+        match, or None if no match. Used to resolve manager names for @mentions."""
+        r = self.session.get(
+            f"{self.base}/rest/api/3/user/search",
+            params={"query": query, "maxResults": 1},
+            timeout=10,
+        )
+        r.raise_for_status()
+        users = r.json()
+        if not users:
+            return None
+        u = users[0]
+        account_id = u.get("accountId")
+        if not account_id:
+            return None
+        return {"id": account_id, "text": f"@{u.get('displayName', query)}"}
+
+    def post_comment(self, issue_key: str, text: str,
+                     mention_map: dict[str, str] | None = None) -> None:
+        """Post a comment to a Jira issue (ADF).
+
+        mention_map maps display text (e.g. '@John Smith') to a Jira accountId.
+        Occurrences of those tokens in the text are converted to inline ADF
+        mention nodes so the tagged users receive an email notification.
+        """
+        def _line_to_nodes(line: str) -> list[dict]:
+            if not mention_map or not line:
+                return [{"type": "text", "text": line}] if line else []
+            pattern = "|".join(
+                re.escape(k) for k in sorted(mention_map, key=len, reverse=True)
+            )
+            nodes: list[dict] = []
+            for part in re.split(f"({pattern})", line):
+                if not part:
+                    continue
+                if part in mention_map:
+                    nodes.append({"type": "mention",
+                                  "attrs": {"id": mention_map[part], "text": part}})
+                else:
+                    nodes.append({"type": "text", "text": part})
+            return nodes
+
         content = []
         for para in text.split("\n\n"):
             if not para.strip():
                 continue
-            para_nodes = []
+            para_nodes: list[dict] = []
             for i, line in enumerate(para.split("\n")):
                 if i > 0:
                     para_nodes.append({"type": "hardBreak"})
-                if line:
-                    para_nodes.append({"type": "text", "text": line})
+                para_nodes.extend(_line_to_nodes(line))
             if para_nodes:
                 content.append({"type": "paragraph", "content": para_nodes})
         if not content:
@@ -203,6 +243,10 @@ class JiraClient:
             raw_date   = f.get(date_field) or ""
             start_date = _parse_start_date(raw_date)
 
+            reporter_raw  = f.get("reporter") or {}
+            reporter_id   = reporter_raw.get("accountId", "")
+            reporter_name = reporter_raw.get("displayName", "")
+
             manager_raw = (f.get(_CF_MANAGER) or "").strip().lstrip(": ")
 
             rejoiner_raw = f.get(_CF_REJOINER) or {}
@@ -228,9 +272,11 @@ class JiraClient:
                     "rejoiner":     rejoiner,
                     "phone":        phone,
                     "company_name": company_name,
-                    "status":       (f.get("status") or {}).get("name", ""),
-                    "start_date":   start_date,
-                    "url":          f"{self.base}/browse/{issue['key']}",
+                    "status":         (f.get("status") or {}).get("name", ""),
+                    "start_date":     start_date,
+                    "url":            f"{self.base}/browse/{issue['key']}",
+                    "reporter_id":    reporter_id,
+                    "reporter_name":  reporter_name,
                 }
             )
 

@@ -45,8 +45,11 @@ class MainWindow(tk.Toplevel):
         self._buddy_fetched: set = set()
         self._buddy_box_frame: tk.Frame | None = None
         self._buddy_box_ticket: str | None = None
-        self._manual_buddies: set = set()  # ticket_ids with a persisted manual buddy
+        self._manual_buddies: set = set()        # ticket_ids with a persisted manual buddy
+        self._dismissed_buddies: set = set()     # disabled buddies the user has cleared
+        self._dismissed_buddy_names: dict = {}   # ticket_id -> display name of cleared buddy
         self._load_manual_buddies()
+        self._load_dismissed_buddies()
 
         self.title("ITSD Jira Helper")
         self.geometry("980x620")
@@ -377,6 +380,20 @@ class MainWindow(tk.Toplevel):
                 self._buddy_fetched.add(t["id"])
                 self._manual_buddies.add(t["id"])
 
+    def _load_dismissed_buddies(self):
+        for t in self.tickets:
+            tid = t["id"]
+            if tid in self._manual_buddies:
+                continue  # manual buddy was set after dismissal — it wins
+            name = self.storage.get_dismissed_buddy(tid)
+            if name:
+                self._dismissed_buddies.add(tid)
+                self._dismissed_buddy_names[tid] = name
+                # Pre-mark as fetched with no buddy so the box renders correctly
+                # without waiting for comments to load
+                self._buddy_hint[tid] = None
+                self._buddy_fetched.add(tid)
+
     def _show_buddy_box(self, t: dict):
         tid = t["id"]
         frame = tk.Frame(self._detail, bg=SOFT_BLUE,
@@ -389,6 +406,11 @@ class MainWindow(tk.Toplevel):
             buddy = self._buddy_hint.get(tid)
             if buddy:
                 self._fill_buddy_box(frame, buddy)
+                if "disabled" not in buddy:
+                    threading.Thread(
+                        target=self._check_buddy_disabled,
+                        args=(tid, buddy), daemon=True,
+                    ).start()
             else:
                 self._draw_buddy_no_result(frame, tid)
         else:
@@ -399,6 +421,11 @@ class MainWindow(tk.Toplevel):
     def _fill_buddy_box(self, frame: tk.Frame, buddy: dict):
         for w in frame.winfo_children():
             w.destroy()
+
+        if buddy.get("disabled"):
+            self._fill_disabled_buddy_box(frame, buddy)
+            return
+
         frame.configure(bg=SOFT_BLUE, highlightbackground=ACCENT)
         tk.Label(frame, text="Suggested buddy", bg=SOFT_BLUE, fg=ACCENT,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
@@ -407,6 +434,70 @@ class MainWindow(tk.Toplevel):
         source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
         tk.Label(frame, text=source, bg=SOFT_BLUE, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 8))
+
+    def _fill_disabled_buddy_box(self, frame: tk.Frame, buddy: dict):
+        """Renders the buddy box in error state when the AD account is disabled."""
+        LIGHT_RED = "#FFEBE6"
+        DARK_RED   = "#AE2A19"
+
+        frame.configure(bg=LIGHT_RED, highlightbackground=RED, highlightthickness=2)
+
+        tk.Label(frame, text="Buddy account disabled — action required",
+                 bg=LIGHT_RED, fg=DARK_RED,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(frame, text=buddy["name"], bg=LIGHT_RED, fg=TEXT,
+                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
+        source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
+        tk.Label(frame, text=source, bg=LIGHT_RED, fg=GRAY,
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 4))
+
+        # Warning + instructions
+        warn = tk.Frame(frame, bg="#FFBDAD",
+                        highlightbackground=DARK_RED, highlightthickness=1)
+        warn.pack(fill="x", padx=10, pady=(0, 6))
+        tk.Label(warn,
+                 text="This account is disabled in Active Directory and cannot be used as a template.",
+                 bg="#FFBDAD", fg=DARK_RED,
+                 font=("Segoe UI", 9, "bold"),
+                 wraplength=400, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(6, 2))
+        tk.Label(warn,
+                 text="1. Click \"Remove disabled buddy\" below to clear this suggestion.\n"
+                      "2. Use \"Ask reporter\" to request a valid buddy from the manager or reporter.",
+                 bg="#FFBDAD", fg=DARK_RED,
+                 font=("Segoe UI", 9),
+                 wraplength=400, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(0, 6))
+
+        # Find the ticket id from _buddy_hint (reverse lookup)
+        ticket_id = next(
+            (tid for tid, b in self._buddy_hint.items() if b is buddy), None
+        )
+        if ticket_id is None:
+            # Fall back to currently selected ticket
+            if self._sel is not None and self._sel < len(self.tickets):
+                ticket_id = self.tickets[self._sel]["id"]
+
+        tk.Button(frame,
+                  text="Remove disabled buddy",
+                  command=lambda: self._remove_disabled_buddy(ticket_id),
+                  relief="flat", bd=0, bg=RED, fg=WHITE,
+                  font=("Segoe UI", 9, "bold"),
+                  padx=10, pady=4, cursor="hand2").pack(anchor="w", padx=10, pady=(0, 10))
+
+    def _remove_disabled_buddy(self, ticket_id: str):
+        if ticket_id is None:
+            return
+        buddy = self._buddy_hint.get(ticket_id)
+        if buddy:
+            name = buddy.get("display_name") or buddy.get("name", "")
+            if name:
+                self._dismissed_buddy_names[ticket_id] = name
+                self.storage.set_dismissed_buddy(ticket_id, name)
+        self._buddy_hint[ticket_id] = None
+        self._dismissed_buddies.add(ticket_id)
+        self._manual_buddies.discard(ticket_id)
+        self.storage.set_manual_buddy(ticket_id, "")  # clear any persisted manual buddy
+        self._refresh_buddy_box(ticket_id, None)
+        self._update_ask_btn()
 
     def _draw_buddy_no_result(self, frame: tk.Frame, ticket_id: str):
         for w in frame.winfo_children():
@@ -430,16 +521,39 @@ class MainWindow(tk.Toplevel):
             name = buddy_var.get().strip()
             if not name:
                 return
-            self._buddy_hint[ticket_id] = {"name": name, "author": "manual", "date": ""}
+            # Clear any prior dismissed-buddy state so the new buddy isn't blocked
+            self._dismissed_buddies.discard(ticket_id)
+            self._dismissed_buddy_names.pop(ticket_id, None)
+            self.storage.set_dismissed_buddy(ticket_id, "")
+            buddy_data = {"name": name, "author": "manual", "date": ""}
+            self._buddy_hint[ticket_id] = buddy_data
             self._manual_buddies.add(ticket_id)
             self.storage.set_manual_buddy(ticket_id, name)
-            self._refresh_buddy_box(ticket_id, self._buddy_hint[ticket_id])
+            self._refresh_buddy_box(ticket_id, buddy_data)
             self._update_ask_btn()
+            threading.Thread(
+                target=self._check_buddy_disabled,
+                args=(ticket_id, buddy_data), daemon=True,
+            ).start()
 
         tk.Button(entry_row, text="Set as buddy", command=_set_manual,
                   relief="flat", bd=0, bg="#FF991F", fg=WHITE,
                   font=("Segoe UI", 9), padx=8, pady=2, cursor="hand2").pack(side="left")
         entry.bind("<Return>", lambda _: _set_manual())
+
+    def _check_buddy_disabled(self, ticket_id: str, buddy: dict):
+        try:
+            from ad_automation import get_account_enabled_status, DISABLED_OU_FRAGMENT
+            enabled, dn, display_name = get_account_enabled_status(buddy["name"])
+            if enabled is None:
+                return
+            is_dis = not enabled or DISABLED_OU_FRAGMENT.lower() in dn.lower()
+        except Exception:
+            return
+        updated = {**buddy, "disabled": is_dis,
+                   "display_name": display_name or buddy.get("display_name") or buddy["name"]}
+        self._buddy_hint[ticket_id] = updated
+        self.after(0, lambda: self._refresh_buddy_box(ticket_id, updated))
 
     def _refresh_buddy_box(self, ticket_id: str, buddy: dict | None):
         if self._buddy_box_ticket != ticket_id or not self._buddy_box_frame:
@@ -464,8 +578,9 @@ class MainWindow(tk.Toplevel):
             self._ask_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
             return
         tid = self.tickets[self._sel]["id"]
-        buddy_found = tid in self._buddy_fetched and bool(self._buddy_hint.get(tid))
-        if buddy_found:
+        buddy = self._buddy_hint.get(tid) if tid in self._buddy_fetched else None
+        buddy_active = bool(buddy) and not buddy.get("disabled")
+        if buddy_active:
             self._ask_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
         else:
             self._ask_btn.config(state="normal", bg="#6554C0", fg=WHITE)
@@ -484,7 +599,9 @@ class MainWindow(tk.Toplevel):
                     and self.tickets[self._sel]["id"] == tid):
                 self._show_detail(ticket)
 
-        AskReporterDialog(self, ticket, self.jira, on_sent=on_sent)
+        disabled_buddy = self._dismissed_buddy_names.get(ticket["id"], "")
+        AskReporterDialog(self, ticket, self.jira, on_sent=on_sent,
+                          disabled_buddy=disabled_buddy)
 
     # ── Comments ──────────────────────────────────────────────────────────────
 
@@ -492,28 +609,39 @@ class MainWindow(tk.Toplevel):
         try:
             comments = self.jira.get_comments(issue_key)
             self._comments_cache[issue_key] = comments
-            if ticket_id in self._manual_buddies:
+            if ticket_id in self._dismissed_buddies:
+                buddy = None
+            elif ticket_id in self._manual_buddies:
                 buddy = self._buddy_hint.get(ticket_id)
             else:
                 buddy = extract_buddy_from_comments(comments)
             if buddy:
                 if is_sam_account(buddy["name"]):
                     try:
-                        from ad_automation import sam_exists
-                        if not sam_exists(buddy["name"]):
+                        from ad_automation import get_account_enabled_status, DISABLED_OU_FRAGMENT
+                        enabled, dn, display_name = get_account_enabled_status(buddy["name"])
+                        if enabled is None:
                             buddy = None
+                        else:
+                            is_dis = not enabled or DISABLED_OU_FRAGMENT.lower() in dn.lower()
+                            buddy = {**buddy, "disabled": is_dis,
+                                     "display_name": display_name or buddy["name"]}
                     except Exception:
                         buddy = None
                 else:
                     # Full name found — resolve to SAM via AD search
                     try:
-                        from ad_automation import find_user_accounts
-                        parts = buddy["name"].split()
+                        from ad_automation import find_user_accounts, DISABLED_OU_FRAGMENT
+                        original_name = buddy["name"]
+                        parts = original_name.split()
                         accounts = find_user_accounts(parts[0], parts[-1])
                         enabled = [a for a in accounts if a["enabled"]]
                         match = (enabled or accounts)
                         if match:
-                            buddy = {**buddy, "name": match[0]["username"]}
+                            selected = match[0]
+                            is_dis = not selected["enabled"] or DISABLED_OU_FRAGMENT.lower() in selected["dn"].lower()
+                            buddy = {**buddy, "name": selected["username"], "disabled": is_dis,
+                                     "display_name": original_name}
                         else:
                             buddy = None
                     except Exception:
@@ -797,39 +925,113 @@ class SetupDialog(tk.Toplevel):
 
 class AskReporterDialog(tk.Toplevel):
     _TEMPLATE = (
-        "Hello,\n\n"
+        "Hello, @manager,\n\n"
         "Could you please let us know the name of an existing employee with similar "
         "access rights that we can use as a template for {name}'s account setup? "
         "Also, please specify any additional applications, mailboxes, or system access "
         "required.\n\n"
         "Thank you."
     )
+    _TEMPLATE_DISABLED_BUDDY = (
+        "Hello, @manager,\n\n"
+        "{buddy_name} is no longer working, so we cannot use them as a buddy, because "
+        "the account is disabled. Could you please let us know the name of an existing "
+        "employee with similar access rights that we can use as a template for {name}'s "
+        "account setup? Also, please specify any additional applications, mailboxes, or "
+        "system access required.\n\n"
+        "Thank you."
+    )
 
-    def __init__(self, parent, ticket: dict, jira_client, on_sent):
+    def __init__(self, parent, ticket: dict, jira_client, on_sent,
+                 disabled_buddy: str = ""):
         super().__init__(parent)
-        self._ticket   = ticket
-        self._jira     = jira_client
-        self._on_sent  = on_sent
+        self._ticket         = ticket
+        self._jira           = jira_client
+        self._on_sent        = on_sent
+        self._disabled_buddy = disabled_buddy
+        self._mention_map: dict[str, str] = {}
         self.title(f"Ask reporter — {ticket.get('key', '')}")
-        self.geometry("560x380")
+        self.geometry("560x400")
         self.resizable(False, True)
         self.configure(bg=BG)
         self.grab_set()
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
+        threading.Thread(target=self._resolve_mentions, daemon=True).start()
+
+    def _resolve_mentions(self):
+        manager_mention  = None
+        reporter_mention = None
+
+        manager = self._ticket.get("manager", "").strip()
+        if manager:
+            try:
+                manager_mention = self._jira.search_user(manager)
+            except Exception:
+                pass
+
+        if self._ticket.get("reporter_id"):
+            reporter_mention = {
+                "id":   self._ticket["reporter_id"],
+                "text": f"@{self._ticket.get('reporter_name', 'Reporter')}",
+            }
+
+        # Build ordered greeting list; skip reporter if same account as manager
+        greeting: list[dict] = []
+        if manager_mention:
+            greeting.append(manager_mention)
+        if reporter_mention:
+            if not manager_mention or reporter_mention["text"] != manager_mention["text"]:
+                greeting.append(reporter_mention)
+
+        self._mention_map = {m["text"]: m["id"] for m in greeting}
+
+        def _update():
+            current = self._text.get("1.0", "end-1c")
+            if greeting:
+                substitution = ", ".join(m["text"] for m in greeting)
+                new_text = current.replace("@manager", substitution, 1)
+            else:
+                new_text = current
+            if new_text != current:
+                self._text.delete("1.0", "end")
+                self._text.insert("1.0", new_text)
+
+            if self._mention_map:
+                label = "Will tag: " + "   ".join(self._mention_map)
+                color = ACCENT
+            else:
+                label = "No Jira accounts found to tag"
+                color = GRAY
+            self._tag_label.config(text=label, fg=color)
+
+        try:
+            self.after(0, _update)
+        except Exception:
+            pass
 
     def _build(self):
         tk.Label(self, text="  Post comment to Jira", bg=ACCENT, fg=WHITE,
                  font=("Segoe UI", 11, "bold")).pack(fill="x", ipady=8)
         tk.Label(self,
                  text=f"  {self._ticket['key']}  —  {self._ticket.get('name', '')}",
-                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(10, 4))
+                 bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=20, pady=(10, 2))
+
+        self._tag_label = tk.Label(self, text="Resolving mentions…",
+                                   bg=BG, fg=GRAY, font=("Segoe UI", 8, "italic"))
+        self._tag_label.pack(anchor="w", padx=20, pady=(0, 6))
 
         self._text = tk.Text(self, height=10, relief="solid", bd=1,
                              font=("Segoe UI", 10), bg=WHITE, fg=TEXT,
                              wrap="word", padx=8, pady=6)
-        self._text.insert("1.0", self._TEMPLATE.format(
-            name=self._ticket.get("name", "the new joiner")))
+        if self._disabled_buddy:
+            body = self._TEMPLATE_DISABLED_BUDDY.format(
+                buddy_name=self._disabled_buddy,
+                name=self._ticket.get("name", "the new joiner"),
+            )
+        else:
+            body = self._TEMPLATE.format(name=self._ticket.get("name", "the new joiner"))
+        self._text.insert("1.0", body)
         self._text.pack(fill="both", expand=True, padx=20, pady=(0, 8))
 
         btm = tk.Frame(self, bg=BG)
@@ -851,7 +1053,7 @@ class AskReporterDialog(tk.Toplevel):
         self._msg.config(text="Posting…", fg=GRAY)
         self.update()
         try:
-            self._jira.post_comment(self._ticket["key"], text)
+            self._jira.post_comment(self._ticket["key"], text, self._mention_map or None)
             self._msg.config(text="Comment posted!", fg=GREEN)
             self.after(800, lambda: (self._on_sent(), self.destroy()))
         except Exception as e:
