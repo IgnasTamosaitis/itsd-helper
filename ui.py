@@ -319,11 +319,14 @@ class MainWindow(tk.Toplevel):
                 self._refresh_buddy_box(t["id"], buddy)
         else:
             self._set_comments_text(comments_box, "Loading…")
-            threading.Thread(
-                target=self._fetch_comments,
-                args=(t["key"], t["id"], comments_box),
-                daemon=True,
-            ).start()
+
+        # Always refresh comments in the background so new Jira replies show up
+        # even when the app has been running with a stale in-memory cache.
+        threading.Thread(
+            target=self._fetch_comments,
+            args=(t["key"], t["id"], comments_box),
+            daemon=True,
+        ).start()
 
         self._bind_detail_scroll(self._detail)
         notes_box.bind("<MouseWheel>",
