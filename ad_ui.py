@@ -4,7 +4,7 @@ Account is always pre-created by SAP SF. We detect the scenario, then configure 
 """
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 from datetime import datetime
 
 from ad_automation import (
@@ -36,6 +36,61 @@ SCENARIO_LABELS = {
 }
 
 
+class BusyDialog(tk.Toplevel):
+    def __init__(self, parent, title: str, message: str):
+        super().__init__(parent)
+        self.configure(bg=WHITE)
+        self.title(title)
+        self.resizable(False, False)
+        self.transient(parent)
+        self.protocol("WM_DELETE_WINDOW", lambda: None)
+
+        card = tk.Frame(self, bg=WHITE, padx=20, pady=18)
+        card.pack(fill="both", expand=True)
+
+        tk.Label(card, text="⚙", bg=WHITE, fg=ACCENT,
+                 font=("Segoe UI Symbol", 28)).pack(pady=(0, 6))
+        self._message = tk.Label(card, text=message, bg=WHITE, fg=TEXT,
+                                 font=("Segoe UI", 10, "bold"),
+                                 wraplength=280, justify="center")
+        self._message.pack()
+
+        self._progress = ttk.Progressbar(card, mode="indeterminate", length=220)
+        self._progress.pack(pady=(14, 0))
+        self._progress.start(12)
+
+        self.update_idletasks()
+        self._center_over(parent)
+        self.grab_set()
+
+    def _center_over(self, parent):
+        parent.update_idletasks()
+        width = self.winfo_width() or 320
+        height = self.winfo_height() or 150
+        x = parent.winfo_rootx() + max((parent.winfo_width() - width) // 2, 0)
+        y = parent.winfo_rooty() + max((parent.winfo_height() - height) // 2, 0)
+        self.geometry(f"{width}x{height}+{x}+{y}")
+
+    def set_message(self, title: str, message: str):
+        self.title(title)
+        self._message.config(text=message)
+        self.update_idletasks()
+
+    def close(self):
+        try:
+            self._progress.stop()
+        except tk.TclError:
+            pass
+        try:
+            self.grab_release()
+        except tk.TclError:
+            pass
+        try:
+            self.destroy()
+        except tk.TclError:
+            pass
+
+
 class ADSetupWindow(tk.Toplevel):
     def __init__(self, parent, ticket: dict, storage=None, on_completed=None,
                  buddy_hint: str = ""):
@@ -60,6 +115,7 @@ class ADSetupWindow(tk.Toplevel):
         self._buddy_ext_attrs: dict = {}
         self._ext_attr_vars: dict[str, tk.BooleanVar] = {}
         self._stale_group_vars: dict[str, tk.BooleanVar] = {}
+        self._busy_dialog: BusyDialog | None = None
 
         # Groups state
         self._group_vars: dict[str, tk.BooleanVar] = {}
@@ -127,6 +183,27 @@ class ADSetupWindow(tk.Toplevel):
         yscroll.grid(row=0, column=1, sticky="ns")
         xscroll.grid(row=1, column=0, sticky="ew")
         return text
+
+    def _show_busy(self, title: str, message: str):
+        if self._busy_dialog:
+            try:
+                if self._busy_dialog.winfo_exists():
+                    self._busy_dialog.set_message(title, message)
+                    return
+            except tk.TclError:
+                pass
+            self._busy_dialog = None
+        self._busy_dialog = BusyDialog(self, title, message)
+
+    def _hide_busy(self):
+        if not self._busy_dialog:
+            return
+        self._busy_dialog.close()
+        self._busy_dialog = None
+
+    def _handle_async_error(self, title: str, message: str):
+        self._hide_busy()
+        messagebox.showerror(title, message, parent=self)
 
     # ── Main content ──────────────────────────────────────────────────────────
 
@@ -356,14 +433,19 @@ class ADSetupWindow(tk.Toplevel):
         last  = self.ticket.get("last_name", "")
         self._set_text(self._search_out, "Searching AD...")
         self._scenario_label.config(text="", fg=GRAY)
+        self._show_busy("Searching AD", "Looking up matching accounts in Active Directory...")
 
         def _do():
-            accounts = find_user_accounts(first, last)
-            scenario = classify_scenario(accounts)
-            self.after(0, lambda: self._apply_search_result(accounts, scenario))
+            try:
+                accounts = find_user_accounts(first, last)
+                scenario = classify_scenario(accounts)
+                self.after(0, lambda: self._apply_search_result(accounts, scenario))
+            except Exception as e:
+                self.after(0, lambda: self._handle_async_error("AD search failed", str(e)))
         threading.Thread(target=_do, daemon=True).start()
 
     def _apply_search_result(self, accounts: list[dict], scenario: str):
+        self._hide_busy()
         self._accounts = accounts
         self._scenario = scenario
 
@@ -450,98 +532,103 @@ class ADSetupWindow(tk.Toplevel):
             messagebox.showwarning("No buddy", "Enter the buddy's SAM account name.", parent=self)
             return
         self._buddy_status.config(text="Loading...", fg=GRAY)
+        self._show_busy("Loading Buddy", "Fetching OU, groups, and extra attributes from Active Directory...")
 
         def _do():
-            ou, groups, err, department, ext_attrs = get_buddy_info(sam)
+            try:
+                ou, groups, err, department, ext_attrs = get_buddy_info(sam)
 
-            # For rejoiners, fetch old account groups to compute stale ones
-            stale_groups: list[str] = []
-            if self._scenario in ("rejoiner_dual", "rejoiner_single") and not err:
-                old_sam = (self._old_account.get("username")
-                           if self._scenario == "rejoiner_dual"
-                           else (self._accounts[0].get("username") if self._accounts else ""))
-                if old_sam:
-                    old_groups, _ = get_account_groups(old_sam)
-                    buddy_set = set(groups)
-                    stale_groups = [g for g in old_groups if g not in buddy_set]
+                # For rejoiners, fetch old account groups to compute stale ones
+                stale_groups: list[str] = []
+                if self._scenario in ("rejoiner_dual", "rejoiner_single") and not err:
+                    old_sam = (self._old_account.get("username")
+                               if self._scenario == "rejoiner_dual"
+                               else (self._accounts[0].get("username") if self._accounts else ""))
+                    if old_sam:
+                        old_groups, _ = get_account_groups(old_sam)
+                        buddy_set = set(groups)
+                        stale_groups = [g for g in old_groups if g not in buddy_set]
 
-            def _update():
-                if err:
-                    self._buddy_status.config(text=f"Error: {err}", fg=RED)
-                    return
-                self._ou_var.set(ou)
-                self._buddy_department = department
-                self._buddy_ext_attrs = ext_attrs
-                dept_hint = f"  (dept: {department})" if department else ""
-                self._buddy_status.config(text=f"{len(groups)} groups found{dept_hint}", fg=GREEN)
+                def _update():
+                    self._hide_busy()
+                    if err:
+                        self._buddy_status.config(text=f"Error: {err}", fg=RED)
+                        return
+                    self._ou_var.set(ou)
+                    self._buddy_department = department
+                    self._buddy_ext_attrs = ext_attrs
+                    dept_hint = f"  (dept: {department})" if department else ""
+                    self._buddy_status.config(text=f"{len(groups)} groups found{dept_hint}", fg=GREEN)
 
-                for w in self._buddy_groups_frame.winfo_children():
-                    w.destroy()
-                self._buddy_group_vars = {}
-                for i, g in enumerate(groups):
-                    var = tk.BooleanVar(value=False)
-                    self._buddy_group_vars[g] = var
-                    if i % 2 == 0:
-                        rf = tk.Frame(self._buddy_groups_frame, bg=WHITE)
-                        rf.pack(fill="x")
-                    tk.Checkbutton(rf, text=g, variable=var,
-                                   bg=WHITE, font=("Segoe UI", 9),
-                                   anchor="w").pack(side="left", padx=12, pady=1)
+                    for w in self._buddy_groups_frame.winfo_children():
+                        w.destroy()
+                    self._buddy_group_vars = {}
+                    for i, g in enumerate(groups):
+                        var = tk.BooleanVar(value=False)
+                        self._buddy_group_vars[g] = var
+                        if i % 2 == 0:
+                            rf = tk.Frame(self._buddy_groups_frame, bg=WHITE)
+                            rf.pack(fill="x")
+                        tk.Checkbutton(rf, text=g, variable=var,
+                                       bg=WHITE, font=("Segoe UI", 9),
+                                       anchor="w").pack(side="left", padx=12, pady=1)
 
-                for w in self._ext_attr_frame.winfo_children():
-                    w.destroy()
-                self._ext_attr_vars = {}
-                _LABELS = (
-                    {"extensionAttribute14": "extensionAttribute14"}
-                    if self._scenario in ("new_joiner", "rejoiner_dual") else
-                    {"extensionAttribute5":  "extensionAttribute5",
-                     "extensionAttribute14": "extensionAttribute14"}
-                )
-                any_value = False
-                for attr, label in _LABELS.items():
-                    value = ext_attrs.get(attr, "")
-                    row = tk.Frame(self._ext_attr_frame, bg=WHITE)
-                    row.pack(fill="x", padx=8, pady=2)
-                    var = tk.BooleanVar(value=bool(value))
-                    self._ext_attr_vars[attr] = var
-                    tk.Checkbutton(row, variable=var, bg=WHITE,
-                                   activebackground=WHITE).pack(side="left")
-                    tk.Label(row, text=f"{label}:", bg=WHITE, fg=GRAY,
-                             font=("Segoe UI", 9), width=20, anchor="w").pack(side="left")
-                    tk.Label(row, text=value or "(empty)", bg=WHITE,
-                             fg=TEXT if value else GRAY,
-                             font=("Segoe UI", 9, "italic" if not value else "normal"),
-                             anchor="w").pack(side="left", padx=4)
-                    if value:
-                        any_value = True
-                if not any_value:
-                    tk.Label(self._ext_attr_frame, text="  All extended attributes are empty on buddy",
-                             bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
-
-                # Stale groups section
-                for w in self._stale_groups_frame.winfo_children():
-                    w.destroy()
-                self._stale_group_vars = {}
-                if self._scenario in ("rejoiner_dual", "rejoiner_single"):
-                    self._stale_section.pack(fill="x", pady=(4, 0))
-                    if stale_groups:
-                        for i, g in enumerate(stale_groups):
-                            var = tk.BooleanVar(value=False)
-                            self._stale_group_vars[g] = var
-                            if i % 2 == 0:
-                                rf = tk.Frame(self._stale_groups_frame, bg=WHITE)
-                                rf.pack(fill="x")
-                            tk.Checkbutton(rf, text=g, variable=var,
-                                           bg=WHITE, font=("Segoe UI", 9),
-                                           anchor="w").pack(side="left", padx=12, pady=1)
-                    else:
-                        tk.Label(self._stale_groups_frame,
-                                 text="  No stale groups — old account matches buddy",
+                    for w in self._ext_attr_frame.winfo_children():
+                        w.destroy()
+                    self._ext_attr_vars = {}
+                    labels = (
+                        {"extensionAttribute14": "extensionAttribute14"}
+                        if self._scenario in ("new_joiner", "rejoiner_dual") else
+                        {"extensionAttribute5": "extensionAttribute5",
+                         "extensionAttribute14": "extensionAttribute14"}
+                    )
+                    any_value = False
+                    for attr, label in labels.items():
+                        value = ext_attrs.get(attr, "")
+                        row = tk.Frame(self._ext_attr_frame, bg=WHITE)
+                        row.pack(fill="x", padx=8, pady=2)
+                        var = tk.BooleanVar(value=bool(value))
+                        self._ext_attr_vars[attr] = var
+                        tk.Checkbutton(row, variable=var, bg=WHITE,
+                                       activebackground=WHITE).pack(side="left")
+                        tk.Label(row, text=f"{label}:", bg=WHITE, fg=GRAY,
+                                 font=("Segoe UI", 9), width=20, anchor="w").pack(side="left")
+                        tk.Label(row, text=value or "(empty)", bg=WHITE,
+                                 fg=TEXT if value else GRAY,
+                                 font=("Segoe UI", 9, "italic" if not value else "normal"),
+                                 anchor="w").pack(side="left", padx=4)
+                        if value:
+                            any_value = True
+                    if not any_value:
+                        tk.Label(self._ext_attr_frame, text="  All extended attributes are empty on buddy",
                                  bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
-                else:
-                    self._stale_section.pack_forget()
 
-            self.after(0, _update)
+                    # Stale groups section
+                    for w in self._stale_groups_frame.winfo_children():
+                        w.destroy()
+                    self._stale_group_vars = {}
+                    if self._scenario in ("rejoiner_dual", "rejoiner_single"):
+                        self._stale_section.pack(fill="x", pady=(4, 0))
+                        if stale_groups:
+                            for i, g in enumerate(stale_groups):
+                                var = tk.BooleanVar(value=False)
+                                self._stale_group_vars[g] = var
+                                if i % 2 == 0:
+                                    rf = tk.Frame(self._stale_groups_frame, bg=WHITE)
+                                    rf.pack(fill="x")
+                                tk.Checkbutton(rf, text=g, variable=var,
+                                               bg=WHITE, font=("Segoe UI", 9),
+                                               anchor="w").pack(side="left", padx=12, pady=1)
+                        else:
+                            tk.Label(self._stale_groups_frame,
+                                     text="  No stale groups — old account matches buddy",
+                                     bg=WHITE, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", padx=8, pady=4)
+                    else:
+                        self._stale_section.pack_forget()
+
+                self.after(0, _update)
+            except Exception as e:
+                self.after(0, lambda: self._handle_async_error("Buddy lookup failed", str(e)))
         threading.Thread(target=_do, daemon=True).start()
 
     def _buddy_select_all(self):
@@ -673,18 +760,22 @@ class ADSetupWindow(tk.Toplevel):
         started = datetime.now()
         self._run_status.config(text="In progress", fg=ORANGE)
         self._set_text(self._output_box, f"[{started:%Y-%m-%d %H:%M:%S}] Applying changes...")
+        self._show_busy("Applying Changes", "Applying Active Directory changes. Please wait...")
 
         def _do():
-            out, err, code = run_ps(script, timeout=120)
-            finished = datetime.now()
-            status = "Completed" if code == 0 and not err else ("Not completed" if code != 0 else "Completed with notes")
-            result = f"[{finished:%Y-%m-%d %H:%M:%S}] {status}\n\n"
-            result += out
-            if err:
-                result += f"\n\n--- Details ---\n{err}"
-            if code != 0:
-                result += f"\n\nResult code: {code}"
-            self.after(0, lambda: self._apply_run_result(status, result or "(no output)"))
+            try:
+                out, err, code = run_ps(script, timeout=120)
+                finished = datetime.now()
+                status = "Completed" if code == 0 and not err else ("Not completed" if code != 0 else "Completed with notes")
+                result = f"[{finished:%Y-%m-%d %H:%M:%S}] {status}\n\n"
+                result += out
+                if err:
+                    result += f"\n\n--- Details ---\n{err}"
+                if code != 0:
+                    result += f"\n\nResult code: {code}"
+                self.after(0, lambda: self._apply_run_result(status, result or "(no output)"))
+            except Exception as e:
+                self.after(0, lambda: self._handle_async_error("Apply changes failed", str(e)))
         threading.Thread(target=_do, daemon=True).start()
 
     def _build_safety_summary(self) -> str:
@@ -721,18 +812,25 @@ class ADSetupWindow(tk.Toplevel):
             self._mark_setup_completed(status)
         sam = self._username_var.get().strip()
         if sam:
+            self._show_busy("Verifying Changes", "Checking the updated account in Active Directory...")
             self._run_status.config(text=f"{status}  —  verifying...", fg=color)
             threading.Thread(target=self._run_verification, args=(sam, text, color), daemon=True).start()
+        else:
+            self._hide_busy()
 
     def _run_verification(self, sam: str, existing_output: str, color: str):
-        out, err, _ = run_ps(build_verification_script(sam), timeout=30)
-        verification = out or err or "Verification returned no output."
-        full = existing_output + "\n\n─────────────────────────────\n" + verification
-        def _update():
-            self._set_text(self._output_box, full)
-            self._run_status.config(
-                text=self._run_status.cget("text").replace("  —  verifying...", ""), fg=color)
-        self.after(0, _update)
+        try:
+            out, err, _ = run_ps(build_verification_script(sam), timeout=30)
+            verification = out or err or "Verification returned no output."
+            full = existing_output + "\n\n─────────────────────────────\n" + verification
+            def _update():
+                self._hide_busy()
+                self._set_text(self._output_box, full)
+                self._run_status.config(
+                    text=self._run_status.cget("text").replace("  —  verifying...", ""), fg=color)
+            self.after(0, _update)
+        except Exception as e:
+            self.after(0, lambda: self._handle_async_error("Verification failed", str(e)))
 
     def _remove_stale_groups(self):
         selected = [g for g, v in self._stale_group_vars.items() if v.get()]

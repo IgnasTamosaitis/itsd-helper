@@ -398,6 +398,12 @@ class MainWindow(tk.Toplevel):
             if name:
                 self._dismissed_buddy_names[tid] = unicodedata.normalize("NFC", name)
 
+    def _sync_persisted_buddy_state(self):
+        # Tickets are often loaded after the window has already been created,
+        # so resync stored manual/dismissed buddy state whenever the live list changes.
+        self._load_manual_buddies()
+        self._load_dismissed_buddies()
+
     def _show_buddy_box(self, t: dict):
         tid = t["id"]
         frame = tk.Frame(self._detail, bg=SOFT_BLUE,
@@ -858,6 +864,7 @@ class MainWindow(tk.Toplevel):
 
     def update_tickets(self, tickets: list):
         self.tickets = tickets
+        self._sync_persisted_buddy_state()
         self._refresh_list()
         self._status.set(f"Loaded {len(tickets)} ticket(s).")
         if self._sel is not None and self._sel < len(tickets):
