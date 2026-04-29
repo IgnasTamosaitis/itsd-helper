@@ -14,6 +14,7 @@ import re
 import secrets
 import string
 import subprocess
+import unicodedata
 
 SF_OU_FRAGMENT = "Active_Users_from_SF"   # substring present in the SF provisioning OU
 
@@ -27,6 +28,10 @@ def _ascii(name: str) -> str:
 def _e(s: str) -> str:
     """Escape single quotes for PowerShell single-quoted strings."""
     return str(s).replace("'", "''")
+
+
+def _nfc(value: str) -> str:
+    return unicodedata.normalize("NFC", value or "")
 
 
 def _manager_lookup_lines(manager: str) -> list[str]:
@@ -208,6 +213,12 @@ def generate_password(length: int = 14) -> str:
 # ── PowerShell runner ─────────────────────────────────────────────────────────
 
 def run_ps(script: str, timeout: int = 90) -> tuple[str, str, int]:
+    script = (
+        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+        + script
+    )
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True, text=True, timeout=timeout,
@@ -263,6 +274,8 @@ def find_user_accounts(first: str, last: str) -> list[dict]:
     Search AD by first+last name. Returns all matching accounts with metadata.
     Each dict has: username, enabled, title, dn, ou, is_sf, employee_id
     """
+    first = _nfc(first)
+    last = _nfc(last)
     out, err, code = run_ps(f"""
 Import-Module ActiveDirectory -ErrorAction Stop
 $users = Get-ADUser -Filter {{GivenName -eq '{_e(first)}' -and Surname -eq '{_e(last)}'}} `
@@ -293,6 +306,49 @@ foreach ($u in $users) {{
             "employee_id": parts[4].strip() if len(parts) > 4 else "",
         })
     return results
+
+
+def find_user_accounts_by_name(name: str) -> list[dict]:
+    """Search AD by display/name first, then fall back to first+last parsing."""
+    name = _nfc(name).strip()
+    if not name:
+        return []
+
+    out, err, code = run_ps(f"""
+Import-Module ActiveDirectory -ErrorAction Stop
+$users = Get-ADUser -Filter {{Name -eq '{_e(name)}' -or DisplayName -eq '{_e(name)}'}} `
+    -Properties SamAccountName, Enabled, Title, DistinguishedName, EmployeeID
+foreach ($u in $users) {{
+    $emp = if ($u.EmployeeID) {{ $u.EmployeeID }} else {{ '' }}
+    "$($u.SamAccountName)|$($u.Enabled)|$($u.Title)|$($u.DistinguishedName)|$emp"
+}}
+""")
+    if code == 0 and out:
+        results = []
+        for line in out.splitlines():
+            line = line.strip()
+            if not line or "|" not in line:
+                continue
+            parts = line.split("|", 4)
+            if len(parts) < 4:
+                continue
+            dn = parts[3].strip()
+            results.append({
+                "username":    parts[0].strip(),
+                "enabled":     parts[1].strip() == "True",
+                "title":       parts[2].strip(),
+                "dn":          dn,
+                "ou":          re.sub(r"^CN=[^,]+,", "", dn),
+                "is_sf":       SF_OU_FRAGMENT in dn,
+                "employee_id": parts[4].strip() if len(parts) > 4 else "",
+            })
+        if results:
+            return results
+
+    parts = name.split()
+    if len(parts) >= 2:
+        return find_user_accounts(parts[0], parts[-1])
+    return []
 
 
 def classify_scenario(accounts: list[dict]) -> str:

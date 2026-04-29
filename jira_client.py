@@ -1,4 +1,5 @@
 import re
+import unicodedata
 import requests
 from datetime import date, timedelta
 from dateutil.parser import parse as parse_date
@@ -84,10 +85,10 @@ def _looks_like_full_name(value: str) -> bool:
 
 
 def _normalize_buddy_candidate(value: str, author: str) -> str:
-    cleaned = value.strip().strip(".,:;!?()[]{}\"'")
+    cleaned = unicodedata.normalize("NFC", value).strip().strip(".,:;!?()[]{}\"'")
     cleaned = re.sub(r"^@", "", cleaned).strip()
     if cleaned.lower() in {"my", "mine", "me"}:
-        return author.strip()
+        return unicodedata.normalize("NFC", author).strip()
     return cleaned
 
 
@@ -134,17 +135,19 @@ def extract_buddies_from_comments(comments: list[dict]) -> list[dict]:
     for c in comments:
         if c["author"] in _EXCLUDE_AUTHORS:
             continue
-        candidates = _extract_multi_buddy_candidates(c["body"], c["author"])
+        author = unicodedata.normalize("NFC", c["author"])
+        body = unicodedata.normalize("NFC", c["body"])
+        candidates = _extract_multi_buddy_candidates(body, author)
         if candidates:
-            return [{"name": name, "author": c["author"], "date": c["created"]}
+            return [{"name": name, "author": author, "date": c["created"]}
                     for name in candidates]
         for pat in _BUDDY_PATTERNS:
-            m = re.search(pat, c["body"], re.IGNORECASE)
+            m = re.search(pat, body, re.IGNORECASE)
             if not m:
                 continue
-            name = _normalize_buddy_candidate(m.group(1), c["author"])
+            name = _normalize_buddy_candidate(m.group(1), author)
             if is_sam_account(name) or _looks_like_full_name(name):
-                return [{"name": name, "author": c["author"], "date": c["created"]}]
+                return [{"name": name, "author": author, "date": c["created"]}]
     return []
 
 
