@@ -154,7 +154,7 @@ def extract_buddies_from_comments(comments: list[dict]) -> list[dict]:
         if c["author"] in _EXCLUDE_AUTHORS:
             continue
         author = unicodedata.normalize("NFC", c["author"])
-        body = unicodedata.normalize("NFC", c["body"])
+        body = unicodedata.normalize("NFC", c["body"])[:2000]  # guard against ReDoS on huge comments
         for name in _extract_buddy_candidates_from_comment(body, author):
             key = name.casefold()
             if key in seen:

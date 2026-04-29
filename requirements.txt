@@ -3,3 +3,4 @@ plyer>=2.1
 pystray>=0.19
 Pillow>=10.0
 python-dateutil>=2.8
+keyring>=24.0

@@ -313,10 +313,12 @@ class MainWindow(tk.Toplevel):
             cached_comments = self._comments_cache[t["key"]]
             self._populate_comments(comments_box, cached_comments)
             if t["id"] not in self._buddy_fetched:
-                buddy = self._resolve_buddy_from_comments(t["id"], cached_comments)
-                self._buddy_hint[t["id"]] = buddy
-                self._buddy_fetched.add(t["id"])
-                self._refresh_buddy_box(t["id"], buddy)
+                # Buddy resolution involves PowerShell AD calls — always off-thread.
+                threading.Thread(
+                    target=self._resolve_and_show_buddy,
+                    args=(t["id"], cached_comments),
+                    daemon=True,
+                ).start()
         else:
             self._set_comments_text(comments_box, "Loading…")
 
@@ -710,6 +712,13 @@ class MainWindow(tk.Toplevel):
             self.after(0, lambda: self._refresh_buddy_box(ticket_id, buddy))
         except Exception as e:
             self.after(0, lambda: self._set_comments_text(box, f"Could not load comments: {e}"))
+
+    def _resolve_and_show_buddy(self, ticket_id: str, comments: list[dict]):
+        """Resolve buddy from already-cached comments, off the UI thread."""
+        buddy = self._resolve_buddy_from_comments(ticket_id, comments)
+        self._buddy_hint[ticket_id] = buddy
+        self._buddy_fetched.add(ticket_id)
+        self.after(0, lambda: self._refresh_buddy_box(ticket_id, buddy))
 
     def _resolve_buddy_from_comments(self, ticket_id: str, comments: list[dict]) -> dict | None:
         if ticket_id in self._manual_buddies:

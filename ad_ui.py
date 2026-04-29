@@ -2,6 +2,7 @@
 AD Setup window - new joiner / rejoiner onboarding automation.
 Account is always pre-created by SAP SF. We detect the scenario, then configure it.
 """
+import re
 import threading
 import tkinter as tk
 from tkinter import messagebox, ttk
@@ -26,7 +27,7 @@ TEXT   = "#172B4D"
 BORDER = "#DFE3EA"
 SOFT_BLUE = "#E9F2FF"
 MONO   = ("Consolas", 9)
-DEFAULT_PASSWORD = "Initial123"
+_CLIPBOARD_CLEAR_MS = 30_000   # clear clipboard 30 s after copying sensitive data
 
 SCENARIO_LABELS = {
     "new_joiner":      ("New joiner", GREEN),
@@ -372,16 +373,21 @@ class ADSetupWindow(tk.Toplevel):
         # ── 7. Password ───────────────────────────────────────────────────────
         sec7 = self._section(body, "7. Password")
 
-        self._pwd_var = tk.StringVar(value=DEFAULT_PASSWORD)
+        self._pwd_var = tk.StringVar(value=generate_password())
+        self._pwd_visible = False
         pwd_row = tk.Frame(sec7, bg=BG)
         pwd_row.pack(fill="x")
         tk.Label(pwd_row, text="Password:", bg=BG, fg=GRAY,
                  font=("Segoe UI", 9), width=12, anchor="e").pack(side="left")
-        tk.Entry(pwd_row, textvariable=self._pwd_var, font=("Consolas", 11),
-                 relief="solid", bd=1, width=20).pack(side="left", padx=6, ipady=3)
-        self._btn(pwd_row, "Random password", lambda: self._pwd_var.set(generate_password()),
+        self._pwd_entry = tk.Entry(pwd_row, textvariable=self._pwd_var, font=("Consolas", 11),
+                                   relief="solid", bd=1, width=20, show="*")
+        self._pwd_entry.pack(side="left", padx=6, ipady=3)
+        self._show_btn = self._btn(pwd_row, "Show", self._toggle_pwd_visibility,
+                                   bg="#DEEBFF", fg=ACCENT)
+        self._show_btn.pack(side="left", padx=(0, 4))
+        self._btn(pwd_row, "Random", lambda: self._pwd_var.set(generate_password()),
                   bg="#DEEBFF", fg=ACCENT).pack(side="left", padx=(0, 6))
-        self._btn(pwd_row, "Copy", lambda: self._copy(self._pwd_var.get()),
+        self._btn(pwd_row, "Copy", lambda: self._copy_sensitive(self._pwd_var.get()),
                   bg="#DEEBFF", fg=ACCENT).pack(side="left")
 
         # SMS template
@@ -391,7 +397,7 @@ class ADSetupWindow(tk.Toplevel):
                                 font=("Segoe UI", 9), bg="#FFFAE6",
                                 fg="#172B4D", cursor="hand2", state="disabled")
         self._sms_box.pack(fill="x")
-        self._sms_box.bind("<Button-1>", lambda e: self._copy_sms())
+        self._sms_box.bind("<Button-1>", lambda e: self._copy_sms_sensitive())
         self._update_sms()
         self._username_var.trace_add("write", lambda *_: self._update_sms())
         self._pwd_var.trace_add("write",      lambda *_: self._update_sms())
@@ -680,12 +686,6 @@ class ADSetupWindow(tk.Toplevel):
         self._sms_box.insert("1.0", msg)
         self._sms_box.config(state="disabled")
 
-    def _copy_sms(self):
-        username = self._username_var.get()
-        password = self._pwd_var.get()
-        self._copy(f"Hello,\n\nYour username and password is:\n\n"
-                   f"Username: {username}\nPassword: {password}\n\nHave a great day!")
-
     # ── Script ────────────────────────────────────────────────────────────────
 
     def _build_script(self) -> str:
@@ -698,10 +698,14 @@ class ADSetupWindow(tk.Toplevel):
             raise ValueError("Search for AD accounts first (Section 2).")
         if not email:
             raise ValueError("Email address is required.")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", email):
+            raise ValueError(f"'{email}' does not look like a valid email address.")
         if not password:
             raise ValueError("Password is required.")
         if not ou:
             raise ValueError("Target OU is required.\nEnter a buddy username and click 'Fetch OU + Groups'.")
+        if not re.search(r"(?i)^(OU|CN|DC)=", ou):
+            raise ValueError(f"Target OU does not look like a valid Distinguished Name:\n{ou}")
 
         dept = self._buddy_department
         ext_attrs = {attr: self._buddy_ext_attrs.get(attr, "")
@@ -732,7 +736,7 @@ class ADSetupWindow(tk.Toplevel):
 
     def _copy_script(self):
         try:
-            self._copy(self._build_script())
+            self._copy_sensitive(self._build_script())
         except ValueError as e:
             messagebox.showwarning("Missing info", str(e), parent=self)
 
@@ -808,6 +812,7 @@ class ADSetupWindow(tk.Toplevel):
         color = GREEN if status == "Completed" else (RED if status == "Not completed" else ORANGE)
         self._run_status.config(text=status, fg=color)
         self._set_text(self._output_box, text)
+        self._write_audit_log(status, text)
         if status != "Not completed":
             self._mark_setup_completed(status)
         sam = self._username_var.get().strip()
@@ -876,9 +881,59 @@ class ADSetupWindow(tk.Toplevel):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
+    def _toggle_pwd_visibility(self):
+        self._pwd_visible = not self._pwd_visible
+        self._pwd_entry.config(show="" if self._pwd_visible else "*")
+        self._show_btn.config(text="Hide" if self._pwd_visible else "Show")
+
     def _copy(self, text: str):
         self.clipboard_clear()
         self.clipboard_append(text)
+
+    def _copy_sensitive(self, text: str):
+        """Copy text and schedule an automatic clipboard clear after 30 s."""
+        self._copy(text)
+        self.after(_CLIPBOARD_CLEAR_MS, self._clear_clipboard_if_unchanged)
+        self._last_copied = text
+
+    def _clear_clipboard_if_unchanged(self):
+        try:
+            current = self.clipboard_get()
+        except tk.TclError:
+            return
+        if current == getattr(self, "_last_copied", None):
+            self.clipboard_clear()
+            self.clipboard_append("")
+
+    def _copy_sms_sensitive(self):
+        username = self._username_var.get()
+        password = self._pwd_var.get()
+        self._copy_sensitive(
+            f"Hello,\n\nYour username and password is:\n\n"
+            f"Username: {username}\nPassword: {password}\n\nHave a great day!"
+        )
+
+    def _write_audit_log(self, status: str, output: str):
+        try:
+            from pathlib import Path
+            log_dir = Path.home() / ".jira-reminders"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            log_file = log_dir / "ad_audit.log"
+            entry = (
+                f"\n{'='*60}\n"
+                f"Timestamp : {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n"
+                f"Ticket    : {self.ticket.get('key', '')}  {self.ticket.get('name', '')}\n"
+                f"Scenario  : {self._scenario}\n"
+                f"Account   : {self._username_var.get().strip()}\n"
+                f"Email     : {self._email_var.get().strip()}\n"
+                f"OU        : {self._ou_var.get().strip()}\n"
+                f"Status    : {status}\n"
+                f"Output:\n{output}\n"
+            )
+            with log_file.open("a", encoding="utf-8") as f:
+                f.write(entry)
+        except Exception:
+            pass
 
     @staticmethod
     def _set_text(widget: tk.Text, text: str):

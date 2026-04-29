@@ -91,6 +91,9 @@ The wizard searches AD by first and last name and automatically detects one of t
 
 **Rejoiner (single)** — same as dual but sources employment data from the Jira ticket and buddy instead of an SF dummy.
 
+### Password handling
+The wizard generates a **random password** automatically when it opens — you never see a hardcoded placeholder. The password field is **masked by default**; click **Show** to reveal it. Clicking **Copy** copies the password to the clipboard and **automatically clears it after 30 seconds**, so it is never left sitting in clipboard history. The same auto-clear applies to the SMS template copy and the generated PowerShell script copy.
+
 ### Company address map
 For Girteka group companies (GCC, TNDM, Girteka*, ME Trailers, ClassTrucks Lithuania), the following are set automatically:
 
@@ -109,12 +112,44 @@ Clicking **Use as template** fetches the buddy's OU, groups, Department, and ext
 ### Stale group cleanup
 For rejoiner scenarios, after fetching the buddy, a **Stale groups** panel appears showing groups the old account has that the buddy does not. These are pre-unticked — you select which ones to remove and click **Remove selected from old account**. The app asks for confirmation before making any changes.
 
+### Input validation
+Before generating or running any script, the wizard validates:
+- **Email address** — must match a valid format (`name@domain.tld`)
+- **Target OU** — must begin with a valid Distinguished Name component (`OU=`, `CN=`, or `DC=`)
+
+If either check fails, a clear error message is shown before any changes are attempted.
+
 ### Post-run verification
 After the script runs, the app automatically fetches the account from AD and appends a full attribute summary to the output — Enabled, Title, Description, Department, Company, Office, EmailAddress, Manager, all extensionAttributes, targetAddress, and proxyAddresses — so you can confirm everything is correct without opening ADUC.
+
+### Audit log
+Every time the wizard applies changes, a timestamped record is appended to:
+
+```
+C:\Users\<your username>\.jira-reminders\ad_audit.log
+```
+
+Each entry records the ticket key, person's name, scenario, account, email, target OU, run status, and the full PowerShell output. The log is append-only and never overwritten automatically.
 
 ### proxyAddresses handling
 - Primary `SMTP:Name.Surname@girteka.eu` is set or confirmed
 - If a `SMTP:Name.Surname@girteka.lt` entry exists with uppercase prefix, it is automatically converted to lowercase `smtp:` (secondary) so the `.eu` address remains the sole primary
+
+---
+
+## Security
+
+Credentials and sensitive data are handled carefully throughout the app.
+
+**API token storage** — your Jira API token is stored in **Windows Credential Manager**, not in the config file. It is never written to disk in plaintext. Existing installations are migrated automatically on first launch.
+
+**File permissions** — `config.json` and `tasks.json` are restricted to your Windows user account only (`icacls /inheritance:r`) the first time each file is written.
+
+**Password security** — the AD Setup wizard always generates a fresh random password. The field is masked by default and clipboard contents are cleared automatically after 30 seconds.
+
+**PowerShell execution** — generated scripts run with `-ExecutionPolicy RemoteSigned` rather than `Bypass`, respecting the domain's signing policy for any downloaded modules.
+
+**Input validation** — email addresses and OU paths are validated before any PowerShell is generated or executed.
 
 ---
 
@@ -155,6 +190,8 @@ When the app starts for the first time, a settings window opens automatically. F
 
 Click **Test Connection** to verify your credentials before saving.
 
+Your API token is saved to **Windows Credential Manager** — it will not appear in any file on disk.
+
 Settings can be changed at any time via the tray icon → **Settings**.
 
 ---
@@ -186,6 +223,15 @@ All notes, checklist progress, AD setup records, and manual buddy entries are st
 C:\Users\<your username>\.jira-reminders\
 ```
 
+| File | Contents |
+|---|---|
+| `config.json` | App settings (Jira URL, email, JQL — **not** the API token) |
+| `tasks.json` | Checklist state, notes, buddy assignments, AD setup records |
+| `ad_audit.log` | Append-only log of every AD setup run |
+| `backups\` | Timestamped backups created by **Back up data** |
+
+Your Jira API token is stored separately in **Windows Credential Manager** under the name `jira-reminders`.
+
 Use **Back up data** regularly to keep snapshots. Backups are saved in the `backups` subfolder with a timestamp in the filename.
 
 ---
@@ -197,5 +243,7 @@ Use **Back up data** regularly to keep snapshots. Backups are saved in the `back
 **Buddy not detected** — scroll down to the Jira comments section in the detail panel. If the phrasing is unusual, type the SAM account directly in the manual buddy field in the orange hint box.
 
 **AD Setup returns errors** — ensure you are logged into a machine joined to the domain and that you enter valid domain admin credentials when prompted. The most common cause is expired credentials or not being connected to the corporate network / VPN.
+
+**API token missing after update** — if you upgraded from a version that stored the token in `config.json`, the token is migrated to Windows Credential Manager automatically on first launch. If the connection fails after upgrading, open Settings, re-enter the token, and save.
 
 **Debug tool** — if you need to diagnose Jira connection or query issues, run `debug.py` from a terminal. It will test the connection and print a list of all matching tickets with their raw field values.

@@ -1,5 +1,9 @@
 import json
+import os
 import shutil
+import stat
+import subprocess
+import threading
 from pathlib import Path
 from datetime import datetime
 
@@ -7,6 +11,15 @@ DATA_DIR = Path.home() / ".jira-reminders"
 TASKS_FILE = DATA_DIR / "tasks.json"
 CONFIG_FILE = DATA_DIR / "config.json"
 DEFAULT_TASK_COUNT = 5
+
+_KEYRING_SERVICE = "jira-reminders"
+
+try:
+    import keyring as _keyring
+    _KEYRING_OK = True
+except ImportError:
+    _keyring = None
+    _KEYRING_OK = False
 
 
 def _load(path: Path) -> dict:
@@ -18,20 +31,101 @@ def _load(path: Path) -> dict:
     return {}
 
 
+_icacls_done: set[str] = set()  # paths that have already had ACLs hardened
+
+
+def _set_owner_only(path: Path) -> None:
+    """Restrict file access to the current user only.
+
+    os.chmod is synchronous and fast.  The icacls call is slow on Windows
+    (spawns a subprocess) so it runs once per path in a daemon thread — ACLs
+    persist across writes, so there is no need to repeat it every save.
+    """
+    try:
+        os.chmod(path, stat.S_IRUSR | stat.S_IWUSR)
+    except OSError:
+        pass
+
+    path_str = str(path)
+    if os.name == "nt" and path_str not in _icacls_done:
+        _icacls_done.add(path_str)
+
+        def _run_icacls():
+            try:
+                user = os.environ.get("USERNAME", "")
+                if user:
+                    subprocess.run(
+                        ["icacls", path_str, "/inheritance:r",
+                         "/grant:r", f"{user}:(R,W)"],
+                        capture_output=True, check=False,
+                    )
+            except Exception:
+                pass
+
+        threading.Thread(target=_run_icacls, daemon=True).start()
+
+
 def _save(path: Path, data: dict) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2), encoding="utf-8")
+    _set_owner_only(path)
+
+
+# ── Credential helpers ────────────────────────────────────────────────────────
+
+def save_token(email: str, token: str) -> None:
+    """Save the API token in the OS credential store."""
+    if _KEYRING_OK and email and token:
+        _keyring.set_password(_KEYRING_SERVICE, email, token)
+
+
+def load_token(email: str) -> str:
+    """Load the API token from the OS credential store."""
+    if _KEYRING_OK and email:
+        return _keyring.get_password(_KEYRING_SERVICE, email) or ""
+    return ""
+
+
+def delete_token(email: str) -> None:
+    if _KEYRING_OK and email:
+        try:
+            _keyring.delete_password(_KEYRING_SERVICE, email)
+        except Exception:
+            pass
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config() -> dict | None:
     cfg = _load(CONFIG_FILE)
+    if not cfg:
+        return None
+
+    # One-time migration: move plaintext api_token out of the JSON file
+    if "api_token" in cfg:
+        token = cfg.pop("api_token", "")
+        email = cfg.get("email", "")
+        if token and email:
+            save_token(email, token)
+        _save(CONFIG_FILE, cfg)
+
+    # Inject token from credential store
+    email = cfg.get("email", "")
+    cfg["api_token"] = load_token(email)
+
     return cfg if cfg else None
 
 
 def save_config(cfg: dict) -> None:
-    _save(CONFIG_FILE, cfg)
+    email = cfg.get("email", "")
+    token = cfg.get("api_token", "")
+
+    if email and token:
+        save_token(email, token)
+
+    # Write everything except the token to disk
+    file_cfg = {k: v for k, v in cfg.items() if k != "api_token"}
+    _save(CONFIG_FILE, file_cfg)
 
 
 # ── Task completion + notes storage ──────────────────────────────────────────
