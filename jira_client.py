@@ -126,29 +126,42 @@ def _extract_multi_buddy_candidates(body: str, author: str) -> list[str]:
     return []
 
 
+def _extract_buddy_candidates_from_comment(body: str, author: str) -> list[str]:
+    candidates = _extract_multi_buddy_candidates(body, author)
+    if candidates:
+        return candidates
+    for pat in _BUDDY_PATTERNS:
+        m = re.search(pat, body, re.IGNORECASE)
+        if not m:
+            continue
+        name = _normalize_buddy_candidate(m.group(1), author)
+        if is_sam_account(name) or _looks_like_full_name(name):
+            return [name]
+    return []
+
+
 def extract_buddies_from_comments(comments: list[dict]) -> list[dict]:
     """Scan comments (excluding IT authors) for one or more buddy/template users.
 
-    Returns a list of {name, author, date} dicts from the most recent comment that
-    yields a confident buddy match. SAM matches must still be validated against AD.
+    Returns a list of {name, author, date} dicts aggregated from matching comments,
+    newest first. This keeps the latest suggestions first while still surfacing
+    older mentioned buddies as additional context. SAM matches must still be
+    validated against AD.
     """
+    collected: list[dict] = []
+    seen: set[str] = set()
     for c in reversed(comments):
         if c["author"] in _EXCLUDE_AUTHORS:
             continue
         author = unicodedata.normalize("NFC", c["author"])
         body = unicodedata.normalize("NFC", c["body"])
-        candidates = _extract_multi_buddy_candidates(body, author)
-        if candidates:
-            return [{"name": name, "author": author, "date": c["created"]}
-                    for name in candidates]
-        for pat in _BUDDY_PATTERNS:
-            m = re.search(pat, body, re.IGNORECASE)
-            if not m:
+        for name in _extract_buddy_candidates_from_comment(body, author):
+            key = name.casefold()
+            if key in seen:
                 continue
-            name = _normalize_buddy_candidate(m.group(1), author)
-            if is_sam_account(name) or _looks_like_full_name(name):
-                return [{"name": name, "author": author, "date": c["created"]}]
-    return []
+            seen.add(key)
+            collected.append({"name": name, "author": author, "date": c["created"]})
+    return collected
 
 
 def extract_buddy_from_comments(comments: list[dict]) -> dict | None:
