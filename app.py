@@ -91,6 +91,8 @@ class App:
         threading.Thread(target=self._poll_loop,             daemon=True).start()
         threading.Thread(target=self._morning_summary_loop, daemon=True).start()
 
+        # Launch with the main ticket window visible while keeping the app rooted in the tray.
+        self._root.after(0, self._show_window)
         self._root.after(100, self._drain_ui_queue)
         self._root.mainloop()
 
@@ -216,8 +218,9 @@ class App:
 
     def _show_window(self) -> None:
         if self._window and tk.Toplevel.winfo_exists(self._window):
-            self._window.lift()
             self._window.deiconify()
+            self._window.lift()
+            self._window.focus_force()
             return
         self._window = MainWindow(
             self._root,
@@ -226,6 +229,8 @@ class App:
             self._jira,
             on_refresh=self._manual_refresh,
         )
+        self._window.lift()
+        self._window.focus_force()
 
     def _manual_refresh(self) -> None:
         threading.Thread(target=self._fetch_and_notify, daemon=True).start()

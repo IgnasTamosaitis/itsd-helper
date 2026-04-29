@@ -219,10 +219,18 @@ def run_ps(script: str, timeout: int = 90) -> tuple[str, str, int]:
         "$OutputEncoding = [System.Text.Encoding]::UTF8; "
         + script
     )
+    creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+    startupinfo = None
+    if hasattr(subprocess, "STARTUPINFO"):
+        startupinfo = subprocess.STARTUPINFO()
+        startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+        startupinfo.wShowWindow = 0
     r = subprocess.run(
         ["powershell", "-NoProfile", "-ExecutionPolicy", "Bypass", "-Command", script],
         capture_output=True, text=True, timeout=timeout,
         encoding="utf-8", errors="replace",
+        creationflags=creationflags,
+        startupinfo=startupinfo,
     )
     return r.stdout.strip(), r.stderr.strip(), r.returncode
 
