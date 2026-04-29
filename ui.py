@@ -457,7 +457,14 @@ class MainWindow(tk.Toplevel):
         tk.Label(frame, text="Multiple buddies found — choose one",
                  bg="#FFF4E5", fg="#B76E00",
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        source = f"From comment by {buddy['author']}  •  {buddy['date']}"
+        sources = {
+            (candidate.get("author", ""), candidate.get("date", ""))
+            for candidate in buddy.get("candidates", [])
+        }
+        if len(sources) == 1:
+            source = f"From comment by {buddy['author']}  •  {buddy['date']}"
+        else:
+            source = "Detected across multiple Jira comments"
         tk.Label(frame, text=source, bg="#FFF4E5", fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 4))
         tk.Label(frame,
@@ -481,6 +488,13 @@ class MainWindow(tk.Toplevel):
                          font=("Segoe UI", 8, "bold")).pack(side="right")
             else:
                 active_candidates += 1
+
+            source = "Set manually" if candidate.get("author") == "manual" else (
+                f"From comment by {candidate.get('author', '')}  •  {candidate.get('date', '')}"
+            )
+            tk.Label(card, text=source, bg=card_bg, fg=GRAY,
+                     font=("Segoe UI", 8), wraplength=440, justify="left").pack(
+                         anchor="w", padx=8, pady=(0, 4))
 
             status = "This account cannot be used as a template." if candidate.get("disabled") else "Ready to use as the template account."
             tk.Label(card, text=status, bg=card_bg,
