@@ -4,7 +4,7 @@ from tkinter import messagebox
 import webbrowser
 from datetime import date
 
-from jira_client import extract_buddy_from_comments, is_sam_account
+from jira_client import extract_buddies_from_comments, is_sam_account
 
 TASKS = [
     "Active Directory account setup",
@@ -405,8 +405,8 @@ class MainWindow(tk.Toplevel):
         if tid in self._buddy_fetched:
             buddy = self._buddy_hint.get(tid)
             if buddy:
-                self._fill_buddy_box(frame, buddy)
-                if "disabled" not in buddy:
+                self._fill_buddy_box(frame, buddy, tid)
+                if not buddy.get("multiple") and "disabled" not in buddy:
                     threading.Thread(
                         target=self._check_buddy_disabled,
                         args=(tid, buddy), daemon=True,
@@ -418,24 +418,90 @@ class MainWindow(tk.Toplevel):
                      bg=SOFT_BLUE, fg=GRAY,
                      font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=10, pady=6)
 
-    def _fill_buddy_box(self, frame: tk.Frame, buddy: dict):
+    def _fill_buddy_box(self, frame: tk.Frame, buddy: dict, ticket_id: str):
         for w in frame.winfo_children():
             w.destroy()
 
+        if buddy.get("multiple"):
+            self._fill_multiple_buddy_box(frame, buddy, ticket_id)
+            return
+
         if buddy.get("disabled"):
-            self._fill_disabled_buddy_box(frame, buddy)
+            self._fill_disabled_buddy_box(frame, buddy, ticket_id)
             return
 
         frame.configure(bg=SOFT_BLUE, highlightbackground=ACCENT)
         tk.Label(frame, text="Suggested buddy", bg=SOFT_BLUE, fg=ACCENT,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        tk.Label(frame, text=buddy["name"], bg=SOFT_BLUE, fg=TEXT,
+        tk.Label(frame, text=self._buddy_caption(buddy), bg=SOFT_BLUE, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
         source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
         tk.Label(frame, text=source, bg=SOFT_BLUE, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 8))
 
-    def _fill_disabled_buddy_box(self, frame: tk.Frame, buddy: dict):
+    @staticmethod
+    def _buddy_caption(buddy: dict) -> str:
+        display_name = buddy.get("display_name", "")
+        sam = buddy.get("name", "")
+        if display_name and display_name.lower() != sam.lower():
+            return f"{display_name} ({sam})"
+        return sam or display_name
+
+    def _fill_multiple_buddy_box(self, frame: tk.Frame, buddy: dict, ticket_id: str):
+        frame.configure(bg="#FFF4E5", highlightbackground="#FF991F", highlightthickness=1)
+
+        tk.Label(frame, text="Multiple buddies found — choose one",
+                 bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        source = f"From comment by {buddy['author']}  •  {buddy['date']}"
+        tk.Label(frame, text=source, bg="#FFF4E5", fg=GRAY,
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 4))
+        tk.Label(frame,
+                 text="The comment mentioned more than one possible buddy. Choose the account to use as the template.",
+                 bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9), wraplength=480, justify="left").pack(
+                     anchor="w", padx=10, pady=(0, 8))
+
+        active_candidates = 0
+        for candidate in buddy.get("candidates", []):
+            card_bg = "#FFFFFF" if not candidate.get("disabled") else "#FFEBE6"
+            card = tk.Frame(frame, bg=card_bg, highlightbackground=BORDER, highlightthickness=1)
+            card.pack(fill="x", padx=10, pady=(0, 6))
+
+            top = tk.Frame(card, bg=card_bg)
+            top.pack(fill="x", padx=8, pady=(8, 2))
+            tk.Label(top, text=self._buddy_caption(candidate), bg=card_bg, fg=TEXT,
+                     font=("Segoe UI", 10, "bold")).pack(side="left")
+            if candidate.get("disabled"):
+                tk.Label(top, text="Disabled in AD", bg=card_bg, fg=RED,
+                         font=("Segoe UI", 8, "bold")).pack(side="right")
+            else:
+                active_candidates += 1
+
+            status = "This account cannot be used as a template." if candidate.get("disabled") else "Ready to use as the template account."
+            tk.Label(card, text=status, bg=card_bg,
+                     fg=RED if candidate.get("disabled") else GRAY,
+                     font=("Segoe UI", 8), wraplength=440, justify="left").pack(
+                         anchor="w", padx=8, pady=(0, 6))
+
+            tk.Button(card,
+                      text="Use this buddy",
+                      command=lambda c=candidate: self._set_manual_buddy(ticket_id, c, keep_source=False),
+                      state="disabled" if candidate.get("disabled") else "normal",
+                      relief="flat", bd=0,
+                      bg="#FF991F" if not candidate.get("disabled") else "#DDE3EA",
+                      fg=WHITE if not candidate.get("disabled") else GRAY,
+                      font=("Segoe UI", 9, "bold"),
+                      padx=10, pady=4, cursor="hand2").pack(anchor="w", padx=8, pady=(0, 8))
+
+        if active_candidates == 0:
+            tk.Label(frame,
+                     text="All detected buddy accounts are disabled. Use \"Ask reporter\" to request another template account.",
+                     bg="#FFF4E5", fg=RED,
+                     font=("Segoe UI", 9), wraplength=480, justify="left").pack(
+                         anchor="w", padx=10, pady=(0, 8))
+
+    def _fill_disabled_buddy_box(self, frame: tk.Frame, buddy: dict, ticket_id: str):
         """Renders the buddy box in error state when the AD account is disabled."""
         LIGHT_RED = "#FFEBE6"
         DARK_RED   = "#AE2A19"
@@ -445,7 +511,7 @@ class MainWindow(tk.Toplevel):
         tk.Label(frame, text="Buddy account disabled — action required",
                  bg=LIGHT_RED, fg=DARK_RED,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        tk.Label(frame, text=buddy["name"], bg=LIGHT_RED, fg=TEXT,
+        tk.Label(frame, text=self._buddy_caption(buddy), bg=LIGHT_RED, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
         source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
         tk.Label(frame, text=source, bg=LIGHT_RED, fg=GRAY,
@@ -466,15 +532,6 @@ class MainWindow(tk.Toplevel):
                  bg="#FFBDAD", fg=DARK_RED,
                  font=("Segoe UI", 9),
                  wraplength=400, justify="left", anchor="w").pack(anchor="w", padx=8, pady=(0, 6))
-
-        # Find the ticket id from _buddy_hint (reverse lookup)
-        ticket_id = next(
-            (tid for tid, b in self._buddy_hint.items() if b is buddy), None
-        )
-        if ticket_id is None:
-            # Fall back to currently selected ticket
-            if self._sel is not None and self._sel < len(self.tickets):
-                ticket_id = self.tickets[self._sel]["id"]
 
         tk.Button(frame,
                   text="Remove disabled buddy",
@@ -521,25 +578,34 @@ class MainWindow(tk.Toplevel):
             name = buddy_var.get().strip()
             if not name:
                 return
-            # Clear any prior dismissed-buddy state so the new buddy isn't blocked
-            self._dismissed_buddies.discard(ticket_id)
-            self._dismissed_buddy_names.pop(ticket_id, None)
-            self.storage.set_dismissed_buddy(ticket_id, "")
-            buddy_data = {"name": name, "author": "manual", "date": ""}
-            self._buddy_hint[ticket_id] = buddy_data
-            self._manual_buddies.add(ticket_id)
-            self.storage.set_manual_buddy(ticket_id, name)
-            self._refresh_buddy_box(ticket_id, buddy_data)
-            self._update_ask_btn()
-            threading.Thread(
-                target=self._check_buddy_disabled,
-                args=(ticket_id, buddy_data), daemon=True,
-            ).start()
+            self._set_manual_buddy(ticket_id, {"name": name, "author": "manual", "date": ""})
 
         tk.Button(entry_row, text="Set as buddy", command=_set_manual,
                   relief="flat", bd=0, bg="#FF991F", fg=WHITE,
                   font=("Segoe UI", 9), padx=8, pady=2, cursor="hand2").pack(side="left")
         entry.bind("<Return>", lambda _: _set_manual())
+
+    def _set_manual_buddy(self, ticket_id: str, buddy_data: dict, keep_source: bool = True):
+        # Clear any prior dismissed-buddy state so the new buddy isn't blocked.
+        self._dismissed_buddies.discard(ticket_id)
+        self._dismissed_buddy_names.pop(ticket_id, None)
+        self.storage.set_dismissed_buddy(ticket_id, "")
+
+        selected = dict(buddy_data)
+        if not keep_source:
+            selected["author"] = "manual"
+            selected["date"] = ""
+
+        self._buddy_hint[ticket_id] = selected
+        self._manual_buddies.add(ticket_id)
+        self.storage.set_manual_buddy(ticket_id, selected["name"])
+        self._refresh_buddy_box(ticket_id, selected)
+        self._update_ask_btn()
+        self._update_ad_button()
+        threading.Thread(
+            target=self._check_buddy_disabled,
+            args=(ticket_id, selected), daemon=True,
+        ).start()
 
     def _check_buddy_disabled(self, ticket_id: str, buddy: dict):
         try:
@@ -564,10 +630,11 @@ class MainWindow(tk.Toplevel):
         except tk.TclError:
             return
         if buddy:
-            self._fill_buddy_box(self._buddy_box_frame, buddy)
+            self._fill_buddy_box(self._buddy_box_frame, buddy, ticket_id)
         else:
             self._draw_buddy_no_result(self._buddy_box_frame, ticket_id)
         self._update_ask_btn()
+        self._update_ad_button()
 
     # ── Ask reporter ──────────────────────────────────────────────────────────
 
@@ -579,7 +646,10 @@ class MainWindow(tk.Toplevel):
             return
         tid = self.tickets[self._sel]["id"]
         buddy = self._buddy_hint.get(tid) if tid in self._buddy_fetched else None
-        buddy_active = bool(buddy) and not buddy.get("disabled")
+        buddy_active = bool(buddy) and (
+            (buddy.get("multiple") and any(not c.get("disabled") for c in buddy.get("candidates", [])))
+            or (not buddy.get("multiple") and not buddy.get("disabled"))
+        )
         if buddy_active:
             self._ask_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
         else:
@@ -614,44 +684,85 @@ class MainWindow(tk.Toplevel):
             elif ticket_id in self._manual_buddies:
                 buddy = self._buddy_hint.get(ticket_id)
             else:
-                buddy = extract_buddy_from_comments(comments)
-            if buddy:
-                if is_sam_account(buddy["name"]):
-                    try:
-                        from ad_automation import get_account_enabled_status, DISABLED_OU_FRAGMENT
-                        enabled, dn, display_name = get_account_enabled_status(buddy["name"])
-                        if enabled is None:
-                            buddy = None
-                        else:
-                            is_dis = not enabled or DISABLED_OU_FRAGMENT.lower() in dn.lower()
-                            buddy = {**buddy, "disabled": is_dis,
-                                     "display_name": display_name or buddy["name"]}
-                    except Exception:
-                        buddy = None
-                else:
-                    # Full name found — resolve to SAM via AD search
-                    try:
-                        from ad_automation import find_user_accounts, DISABLED_OU_FRAGMENT
-                        original_name = buddy["name"]
-                        parts = original_name.split()
-                        accounts = find_user_accounts(parts[0], parts[-1])
-                        enabled = [a for a in accounts if a["enabled"]]
-                        match = (enabled or accounts)
-                        if match:
-                            selected = match[0]
-                            is_dis = not selected["enabled"] or DISABLED_OU_FRAGMENT.lower() in selected["dn"].lower()
-                            buddy = {**buddy, "name": selected["username"], "disabled": is_dis,
-                                     "display_name": original_name}
-                        else:
-                            buddy = None
-                    except Exception:
-                        buddy = None
+                buddy = self._resolve_detected_buddies(extract_buddies_from_comments(comments))
             self._buddy_hint[ticket_id] = buddy
             self._buddy_fetched.add(ticket_id)
             self.after(0, lambda: self._populate_comments(box, comments))
             self.after(0, lambda: self._refresh_buddy_box(ticket_id, buddy))
         except Exception as e:
             self.after(0, lambda: self._set_comments_text(box, f"Could not load comments: {e}"))
+
+    def _resolve_detected_buddies(self, detected: list[dict]) -> dict | None:
+        if not detected:
+            return None
+
+        resolved: list[dict] = []
+        seen: set[str] = set()
+        for candidate in detected:
+            resolved_candidate = self._resolve_detected_buddy(candidate)
+            if not resolved_candidate:
+                continue
+            key = resolved_candidate["name"].lower()
+            if key in seen:
+                continue
+            seen.add(key)
+            resolved.append(resolved_candidate)
+
+        if not resolved:
+            return None
+        if len(resolved) == 1:
+            return resolved[0]
+        return {
+            "multiple": True,
+            "author": resolved[0]["author"],
+            "date": resolved[0]["date"],
+            "candidates": resolved,
+        }
+
+    @staticmethod
+    def _resolve_detected_buddy(candidate: dict) -> dict | None:
+        try:
+            from ad_automation import find_user_accounts, get_account_enabled_status, DISABLED_OU_FRAGMENT
+        except Exception:
+            return None
+
+        if is_sam_account(candidate["name"]):
+            try:
+                enabled, dn, display_name = get_account_enabled_status(candidate["name"])
+            except Exception:
+                return None
+            if enabled is None:
+                return None
+            is_dis = not enabled or DISABLED_OU_FRAGMENT.lower() in dn.lower()
+            return {
+                **candidate,
+                "disabled": is_dis,
+                "display_name": display_name or candidate["name"],
+            }
+
+        original_name = candidate["name"]
+        parts = original_name.split()
+        if len(parts) < 2:
+            return None
+
+        try:
+            accounts = find_user_accounts(parts[0], parts[-1])
+        except Exception:
+            return None
+
+        enabled_accounts = [a for a in accounts if a["enabled"]]
+        match = enabled_accounts or accounts
+        if not match:
+            return None
+
+        selected = match[0]
+        is_dis = not selected["enabled"] or DISABLED_OU_FRAGMENT.lower() in selected["dn"].lower()
+        return {
+            **candidate,
+            "name": selected["username"],
+            "disabled": is_dis,
+            "display_name": original_name,
+        }
 
     def _populate_comments(self, box: tk.Text, comments: list[dict]):
         if not comments:
@@ -689,7 +800,7 @@ class MainWindow(tk.Toplevel):
             return
         from ad_ui import ADSetupWindow
         buddy_info = self._buddy_hint.get(ticket["id"])
-        buddy_name = buddy_info["name"] if buddy_info else ""
+        buddy_name = buddy_info["name"] if buddy_info and not buddy_info.get("multiple") else ""
         ADSetupWindow(
             self,
             ticket,
