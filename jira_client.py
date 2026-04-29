@@ -72,19 +72,88 @@ def is_sam_account(value: str) -> bool:
     return bool(re.fullmatch(r'[A-Za-z][A-Za-z0-9]{4}', value))
 
 
+def _looks_like_full_name(value: str) -> bool:
+    parts = [p.strip(".,:;!?()[]{}\"'") for p in value.split() if p.strip(".,:;!?()[]{}\"'")]
+    if not 2 <= len(parts) <= 3:
+        return False
+    for part in parts:
+        for subpart in part.split("-"):
+            if len(subpart) < 2 or not subpart[0].isupper() or not subpart[1:].isalpha():
+                return False
+    return True
+
+
+def _normalize_buddy_candidate(value: str, author: str) -> str:
+    cleaned = value.strip().strip(".,:;!?()[]{}\"'")
+    cleaned = re.sub(r"^@", "", cleaned).strip()
+    if cleaned.lower() in {"my", "mine", "me"}:
+        return author.strip()
+    return cleaned
+
+
+def _parse_buddy_candidate_list(value: str, author: str) -> list[str]:
+    parts = re.split(r"\s*(?:,|;|/|&)\s*|\s+\band\b\s+", value, flags=re.IGNORECASE)
+    results: list[str] = []
+    seen: set[str] = set()
+    for part in parts:
+        candidate = _normalize_buddy_candidate(part, author)
+        if not candidate:
+            continue
+        if not (is_sam_account(candidate) or _looks_like_full_name(candidate)):
+            continue
+        key = candidate.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(candidate)
+    return results
+
+
+def _extract_multi_buddy_candidates(body: str, author: str) -> list[str]:
+    patterns = [
+        r"\b(?:take|use)\s+(.+?)\s+users?\b",
+        r"\b(?:take|use)\s+(.+?)\s+budd(?:y|ies)\b",
+        r"\b(?:take|use)\s+(.+?)\s+as\s+(?:templates?|budd(?:y|ies))\b",
+    ]
+    for pat in patterns:
+        m = re.search(pat, body, re.IGNORECASE)
+        if not m:
+            continue
+        candidates = _parse_buddy_candidate_list(m.group(1), author)
+        if candidates:
+            return candidates
+    return []
+
+
+def extract_buddies_from_comments(comments: list[dict]) -> list[dict]:
+    """Scan comments (excluding IT authors) for one or more buddy/template users.
+
+    Returns a list of {name, author, date} dicts from the first comment that yields
+    a confident buddy match. SAM matches must still be validated against AD.
+    """
+    for c in comments:
+        if c["author"] in _EXCLUDE_AUTHORS:
+            continue
+        candidates = _extract_multi_buddy_candidates(c["body"], c["author"])
+        if candidates:
+            return [{"name": name, "author": c["author"], "date": c["created"]}
+                    for name in candidates]
+        for pat in _BUDDY_PATTERNS:
+            m = re.search(pat, c["body"], re.IGNORECASE)
+            if not m:
+                continue
+            name = _normalize_buddy_candidate(m.group(1), c["author"])
+            if is_sam_account(name) or _looks_like_full_name(name):
+                return [{"name": name, "author": c["author"], "date": c["created"]}]
+    return []
+
+
 def extract_buddy_from_comments(comments: list[dict]) -> dict | None:
     """Scan comments (excluding IT authors) for a buddy/template user.
     Returns {name, author, date} on first confident match, or None.
     SAM matches (5-char) must be validated against AD by the caller before use."""
-    for c in comments:
-        if c["author"] in _EXCLUDE_AUTHORS:
-            continue
-        for pat in _BUDDY_PATTERNS:
-            m = re.search(pat, c["body"], re.IGNORECASE)
-            if m:
-                name = m.group(1).strip()
-                return {"name": name, "author": c["author"], "date": c["created"]}
-    return None
+    buddies = extract_buddies_from_comments(comments)
+    return buddies[0] if buddies else None
 
 
 # Custom field IDs from the real Girteka Jira tickets
