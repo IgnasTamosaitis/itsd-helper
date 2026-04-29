@@ -2,7 +2,7 @@
 
 ---
 
-## v1.1 — Hardened & Complete: New Joiner Onboarding
+## v1.0.2 — Hardened & Complete: New Joiner Onboarding
 
 This release completes the New Joiner onboarding workflow and hardens the application for production use in a corporate environment. All known security gaps have been addressed and UI responsiveness has been significantly improved.
 
