@@ -225,6 +225,37 @@ def sam_exists(sam: str) -> bool:
     )
     return code == 0
 
+
+DISABLED_OU_FRAGMENT = "OU=Disabled by Jira"
+
+
+def get_account_enabled_status(sam: str) -> tuple[bool | None, str, str]:
+    """
+    Returns (enabled, dn, display_name) for a SAM account.
+    enabled is None if the account was not found.
+    display_name is the AD Name attribute (typically 'Firstname Lastname').
+    """
+    out, _, code = run_ps(
+        f"Import-Module ActiveDirectory -ErrorAction Stop; "
+        f"$u = Get-ADUser -Identity '{_e(sam)}' -Properties Enabled,DistinguishedName,Name -ErrorAction Stop; "
+        f"\"$($u.Enabled)|$($u.DistinguishedName)|$($u.Name)\"",
+        timeout=10,
+    )
+    if code != 0 or not out:
+        return None, "", ""
+    parts = out.split("|", 2)
+    if len(parts) < 3:
+        return None, "", ""
+    return parts[0].strip() == "True", parts[1].strip(), parts[2].strip()
+
+
+def is_buddy_disabled(sam: str) -> bool:
+    """Returns True if the account is disabled or sits in the disabled OU."""
+    enabled, dn, _ = get_account_enabled_status(sam)
+    if enabled is None:
+        return False
+    return not enabled or DISABLED_OU_FRAGMENT.lower() in dn.lower()
+
 # ── AD queries ────────────────────────────────────────────────────────────────
 
 def find_user_accounts(first: str, last: str) -> list[dict]:
@@ -423,6 +454,15 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
+    L += [
+        "# Reset password",
+        f"Set-ADAccountPassword -Identity '{username}' -Reset `",
+        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
+        f"Set-ADUser -Identity '{username}' -ChangePasswordAtLogon $false",
+        'Write-Host "OK  Password reset"',
+        "",
+    ]
+
     L += _proxy_address_lines(username, email)
 
     # Only set what SF leaves blank
@@ -460,13 +500,6 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
             "",
         ]
 
-    L += [
-        "# Reset password",
-        f"Set-ADAccountPassword -Identity '{username}' -Reset `",
-        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
-        f"Set-ADUser -Identity '{username}' -ChangePasswordAtLogon $false",
-        'Write-Host "OK  Password reset"',
-    ]
     return "\n".join(L)
 
 
@@ -533,6 +566,15 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
+    L += [
+        "# Reset password",
+        f"Set-ADAccountPassword -Identity '{old_sam}' -Reset `",
+        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
+        f"Set-ADUser -Identity '{old_sam}' -ChangePasswordAtLogon $false",
+        'Write-Host "OK  Password reset"',
+        "",
+    ]
+
     L += _proxy_address_lines(old_sam, email)
 
     # Set attributes — employment fields from SF dummy, location from address map
@@ -598,12 +640,6 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         ]
 
     L += [
-        "# Reset password",
-        f"Set-ADAccountPassword -Identity '{old_sam}' -Reset `",
-        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
-        f"Set-ADUser -Identity '{old_sam}' -ChangePasswordAtLogon $false",
-        'Write-Host "OK  Password reset"',
-        "",
         "# !! DELETE SF DUMMY ACCOUNT - verify above output before this runs !!",
         f"Remove-ADUser -Identity '{sf_sam}' -Confirm:$false",
         'Write-Host "OK  SF dummy account deleted"',
@@ -655,15 +691,16 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
-    L += _proxy_address_lines(sam, email)
-    L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address, department)
-    L += build_ext_attr_lines(sam, ext_attrs or {})
-    L += [""]
-
     L += [
+        "# Reset password",
         f"Set-ADAccountPassword -Identity '{sam}' -Reset `",
         f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
         f"Set-ADUser -Identity '{sam}' -ChangePasswordAtLogon $false",
         'Write-Host "OK  Password reset"',
+        "",
     ]
+
+    L += _proxy_address_lines(sam, email)
+    L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address, department)
+    L += build_ext_attr_lines(sam, ext_attrs or {})
     return "\n".join(L)

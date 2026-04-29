@@ -74,6 +74,16 @@ class TaskStorage:
         self._data[f"__buddy_{ticket_id}"] = sam
         _save(TASKS_FILE, self._data)
 
+    # Dismissed disabled buddy
+
+    def get_dismissed_buddy(self, ticket_id: str) -> str:
+        """Returns the display name of the dismissed disabled buddy, or ''."""
+        return self._data.get(f"__dismissed_buddy_{ticket_id}", "")
+
+    def set_dismissed_buddy(self, ticket_id: str, display_name: str) -> None:
+        self._data[f"__dismissed_buddy_{ticket_id}"] = display_name
+        _save(TASKS_FILE, self._data)
+
     # AD setup summary
 
     def get_ad_setup(self, ticket_id: str) -> dict:
