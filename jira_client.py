@@ -129,10 +129,10 @@ def _extract_multi_buddy_candidates(body: str, author: str) -> list[str]:
 def extract_buddies_from_comments(comments: list[dict]) -> list[dict]:
     """Scan comments (excluding IT authors) for one or more buddy/template users.
 
-    Returns a list of {name, author, date} dicts from the first comment that yields
-    a confident buddy match. SAM matches must still be validated against AD.
+    Returns a list of {name, author, date} dicts from the most recent comment that
+    yields a confident buddy match. SAM matches must still be validated against AD.
     """
-    for c in comments:
+    for c in reversed(comments):
         if c["author"] in _EXCLUDE_AUTHORS:
             continue
         author = unicodedata.normalize("NFC", c["author"])
