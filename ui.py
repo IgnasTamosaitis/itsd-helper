@@ -1,3 +1,4 @@
+import os
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -6,6 +7,7 @@ from datetime import date
 import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
+from leaver_document import generate_leaver_return_document
 
 TASKS = [
     "Active Directory account setup",
@@ -25,10 +27,14 @@ RED    = "#C9372C"
 TEXT   = "#172B4D"
 BORDER = "#DFE3EA"
 SOFT_BLUE = "#E9F2FF"
+INPUT_BORDER = "#C7D1DB"
+INPUT_BG = "#FFFFFF"
+ACTION_BTN_WIDTH = 20
 
 
 class MainWindow(tk.Toplevel):
-    def __init__(self, parent, tickets: list, storage, jira_client, on_refresh):
+    def __init__(self, parent, tickets: list, storage, jira_client, on_refresh,
+                 leaver_tickets: list = None, on_leaver_refresh=None, snipeit=None):
         super().__init__(parent)
         self.tickets   = tickets
         self.storage   = storage
@@ -51,6 +57,30 @@ class MainWindow(tk.Toplevel):
         self._load_manual_buddies()
         self._load_dismissed_buddies()
 
+        # Leavers state
+        self.leaver_tickets: list[dict] = leaver_tickets or []
+        self.on_leaver_refresh = on_leaver_refresh
+        self._snipeit = snipeit
+        self._leaver_sel: int | None = None
+        self._leaver_listbox: tk.Listbox | None = None
+        self._leaver_hint: tk.Label | None = None
+        self._leaver_detail: tk.Frame | None = None
+        self._leaver_detail_canvas: tk.Canvas | None = None
+        self._leaver_detail_sb: tk.Scrollbar | None = None
+        self._leaver_detail_wid = None
+        self._leaver_open_btn: tk.Button | None = None
+        self._add_accountants_btn: tk.Button | None = None
+        self._leaver_doc_btn: tk.Button | None = None
+        self._leaver_notes_box: tk.Text | None = None
+        self._leaver_notes_ticket_id: str | None = None
+        self._leaver_notes_save_job = None
+        self._leaver_comments_cache: dict = {}
+        self._leaver_comment_box: tk.Text | None = None
+        self._leaver_comment_ticket_id: str | None = None
+        self._leaver_laptop_frame: tk.Frame | None = None
+        self._leaver_laptop_fetch_for: str = ""   # ticket_id of in-flight fetch
+        self._leaver_laptop_info: dict | None = None
+
         self.title("ITSD Jira Helper")
         self.geometry("980x620")
         self.resizable(True, True)
@@ -59,21 +89,85 @@ class MainWindow(tk.Toplevel):
         self._build()
         self._refresh_list()
         self._update_ad_button()
+        self._refresh_leavers_list()
 
     # ── Layout ────────────────────────────────────────────────────────────────
 
     def _build(self):
-        # Top bar
+        # ── Top bar ───────────────────────────────────────────────────────────────
         bar = tk.Frame(self, bg=ACCENT, height=44)
         bar.pack(fill="x")
         bar.pack_propagate(False)
-        tk.Label(bar, text="  New Joiner Reminders", bg=ACCENT, fg=WHITE,
+        tk.Label(bar, text="  ITSD Jira Helper", bg=ACCENT, fg=WHITE,
                  font=("Segoe UI", 13, "bold")).pack(side="left", pady=10)
         self._make_btn(bar, "Refresh", self._do_refresh, WHITE, ACCENT).pack(
             side="right", padx=10, pady=8)
 
+        # ── Tab strip ─────────────────────────────────────────────────────────────
+        tab_strip = tk.Frame(self, bg=WHITE, height=38)
+        tab_strip.pack(fill="x")
+        tab_strip.pack_propagate(False)
+        self._tab_btns: dict[str, tk.Button] = {}
+        for key, label in [("joiners", "New Joiners"), ("leavers", "Leavers")]:
+            btn = tk.Button(
+                tab_strip, text=label,
+                command=lambda k=key: self._switch_tab(k),
+                relief="flat", bd=0,
+                font=("Segoe UI", 10),
+                padx=20, pady=0,
+                cursor="hand2",
+                activebackground=ACCENT, activeforeground=WHITE,
+            )
+            btn.pack(side="left", fill="y")
+            self._tab_btns[key] = btn
+        tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
+
+        # ── Tab content frames ────────────────────────────────────────────────────
+        self._joiners_tab_frame = tk.Frame(self, bg=BG)
+        self._leavers_tab_frame = tk.Frame(self, bg=BG)
+        self._build_joiners_tab(self._joiners_tab_frame)
+        self._build_leavers_tab(self._leavers_tab_frame)
+
+        self._active_tab: str = ""
+        self._switch_tab("joiners")
+
+    def _switch_tab(self, key: str):
+        if self._active_tab == key:
+            return
+        self._active_tab = key
+        self._joiners_tab_frame.pack_forget()
+        self._leavers_tab_frame.pack_forget()
+        frame = self._joiners_tab_frame if key == "joiners" else self._leavers_tab_frame
+        frame.pack(fill="both", expand=True)
+        for k, btn in self._tab_btns.items():
+            if k == key:
+                btn.config(bg=ACCENT, fg=WHITE, font=("Segoe UI", 10, "bold"))
+            else:
+                btn.config(bg=WHITE, fg=GRAY, font=("Segoe UI", 10))
+
+    def _build_joiners_tab(self, parent: tk.Frame):
+        # Bottom bar — packed first so it anchors to bottom before body expands
+        btm = tk.Frame(parent, bg="#EEF2F7", height=46)
+        btm.pack(fill="x", side="bottom")
+        btm.pack_propagate(False)
+        self._status = tk.StringVar(value="")
+        tk.Label(btm, textvariable=self._status, bg="#EEF2F7", fg=GRAY,
+                 font=("Segoe UI", 9)).pack(side="left", padx=12)
+        self._make_btn(btm, "Open in Jira", self._open_jira, WHITE, ACCENT,
+                       width=ACTION_BTN_WIDTH).pack(
+            side="right", padx=10, pady=8)
+        self._ad_btn = self._make_btn(btm, "AD Setup", self._open_ad_setup, WHITE, "#00875A",
+                                      width=ACTION_BTN_WIDTH)
+        self._ad_btn.pack(side="right", padx=(0, 4), pady=8)
+        self._make_btn(btm, "Back up data", self._backup_data, ACCENT, SOFT_BLUE,
+                       width=ACTION_BTN_WIDTH).pack(
+            side="right", padx=(0, 4), pady=8)
+        self._ask_btn = self._make_btn(btm, "Ask reporter", self._open_ask_reporter,
+                                       WHITE, "#6554C0", width=ACTION_BTN_WIDTH)
+        self._ask_btn.pack(side="right", padx=(0, 4), pady=8)
+
         # Body: left (list) + right (detail)
-        body = tk.Frame(self, bg=BG)
+        body = tk.Frame(parent, bg=BG)
         body.pack(fill="both", expand=True)
 
         # Left panel
@@ -88,7 +182,7 @@ class MainWindow(tk.Toplevel):
             left, selectmode="single", relief="flat", bd=0,
             bg=WHITE, fg=TEXT, font=("Segoe UI", 10),
             selectbackground=SOFT_BLUE, selectforeground=ACCENT,
-            activestyle="none", highlightthickness=0,
+            activestyle="none", highlightthickness=0, exportselection=False,
         )
         self._listbox.pack(fill="both", expand=True, padx=4, pady=(0, 4))
         self._listbox.bind("<<ListboxSelect>>", self._on_select)
@@ -113,23 +207,576 @@ class MainWindow(tk.Toplevel):
             scrollregion=self._detail_canvas.bbox("all")))
         self._detail_canvas.bind("<Configure>", lambda e: self._detail_canvas.itemconfig(
             self._detail_wid, width=e.width))
+        self._bind_detail_scroll(self._detail)
 
-        # Bottom bar
-        btm = tk.Frame(self, bg="#EEF2F7", height=46)
+    def _build_leavers_tab(self, parent: tk.Frame):
+        # Bottom bar — packed first
+        btm = tk.Frame(parent, bg="#EEF2F7", height=46)
         btm.pack(fill="x", side="bottom")
         btm.pack_propagate(False)
-        self._status = tk.StringVar(value="")
-        tk.Label(btm, textvariable=self._status, bg="#EEF2F7", fg=GRAY,
+        self._leavers_status = tk.StringVar(value="")
+        tk.Label(btm, textvariable=self._leavers_status, bg="#EEF2F7", fg=GRAY,
                  font=("Segoe UI", 9)).pack(side="left", padx=12)
-        self._make_btn(btm, "Open in Jira", self._open_jira, WHITE, ACCENT).pack(
-            side="right", padx=10, pady=8)
-        self._ad_btn = self._make_btn(btm, "AD Setup", self._open_ad_setup, WHITE, "#00875A")
-        self._ad_btn.pack(side="right", padx=(0, 4), pady=8)
-        self._make_btn(btm, "Back up data", self._backup_data, ACCENT, SOFT_BLUE).pack(
-            side="right", padx=(0, 4), pady=8)
-        self._ask_btn = self._make_btn(btm, "Ask reporter", self._open_ask_reporter,
-                                       WHITE, "#6554C0")
-        self._ask_btn.pack(side="right", padx=(0, 4), pady=8)
+        self._leaver_open_btn = self._make_btn(btm, "Open in Jira",
+                                               self._leaver_open_jira, WHITE, ACCENT,
+                                               width=ACTION_BTN_WIDTH)
+        self._leaver_open_btn.pack(side="right", padx=10, pady=8)
+        self._leaver_doc_btn = self._make_btn(btm, "Generate return act",
+                                              self._generate_leaver_return_act,
+                                              WHITE, GREEN, width=ACTION_BTN_WIDTH)
+        self._leaver_doc_btn.pack(side="right", padx=(0, 4), pady=8)
+        self._add_accountants_btn = self._make_btn(btm, "Add accountants",
+                                                   self._leaver_add_accountants,
+                                                   WHITE, "#FF991F",
+                                                   width=ACTION_BTN_WIDTH)
+        self._add_accountants_btn.pack(side="right", padx=(0, 4), pady=8)
+
+        # Body
+        body = tk.Frame(parent, bg=BG)
+        body.pack(fill="both", expand=True)
+
+        # Left panel — list
+        left = tk.Frame(body, bg=WHITE, width=420)
+        left.pack(side="left", fill="y")
+        left.pack_propagate(False)
+        tk.Label(left, text="Upcoming leavers", bg=WHITE, fg=GRAY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=14, pady=(14, 6))
+        self._leaver_listbox = tk.Listbox(
+            left, selectmode="single", relief="flat", bd=0,
+            bg=WHITE, fg=TEXT, font=("Segoe UI", 10),
+            selectbackground=SOFT_BLUE, selectforeground=ACCENT,
+            activestyle="none", highlightthickness=0, exportselection=False,
+        )
+        self._leaver_listbox.pack(fill="both", expand=True, padx=4, pady=(0, 4))
+        self._leaver_listbox.bind("<<ListboxSelect>>", self._on_leaver_select)
+
+        # Right panel — detail
+        right = tk.Frame(body, bg=BG)
+        right.pack(side="left", fill="both", expand=True)
+
+        self._leaver_hint = tk.Label(right, text="Select a leaver to view details",
+                                     bg=BG, fg=GRAY, font=("Segoe UI", 11))
+        self._leaver_hint.place(relx=0.5, rely=0.5, anchor="center")
+
+        self._leaver_detail_sb = tk.Scrollbar(right, orient="vertical")
+        self._leaver_detail_canvas = tk.Canvas(right, bg=BG, highlightthickness=0,
+                                               yscrollcommand=self._leaver_detail_sb.set)
+        self._leaver_detail_sb.configure(command=self._leaver_detail_canvas.yview)
+        self._leaver_detail = tk.Frame(self._leaver_detail_canvas, bg=BG)
+        self._leaver_detail_wid = self._leaver_detail_canvas.create_window(
+            (0, 0), window=self._leaver_detail, anchor="nw")
+        self._leaver_detail.bind("<Configure>", lambda e: self._leaver_detail_canvas.configure(
+            scrollregion=self._leaver_detail_canvas.bbox("all")))
+        self._leaver_detail_canvas.bind("<Configure>", lambda e: self._leaver_detail_canvas.itemconfig(
+            self._leaver_detail_wid, width=e.width))
+        self._bind_leaver_detail_scroll(self._leaver_detail)
+
+    # ── Leavers list ──────────────────────────────────────────────────────────
+
+    def _refresh_leavers_list(self):
+        if not self._leaver_listbox:
+            return
+        self._leaver_listbox.delete(0, "end")
+        today = date.today()
+        for i, t in enumerate(self.leaver_tickets):
+            ld    = t.get("last_day")
+            color = TEXT
+
+            if ld:
+                delta = (ld - today).days
+                if delta < 0:
+                    date_tag = f"left {-delta}d ago"
+                    color = GRAY
+                elif delta == 0:
+                    date_tag = "LAST DAY TODAY"
+                    color = RED
+                elif delta == 1:
+                    date_tag = "last day TOMORROW"
+                    color = RED
+                elif delta <= 7:
+                    date_tag = f"leaves in {delta}d"
+                    color = GREEN
+                else:
+                    date_tag = f"{ld.strftime('%b %d')} ({delta}d)"
+            else:
+                date_tag = "no date"
+
+            label = f"  {t['key']}  {t['name']}  [{date_tag}]"
+            self._leaver_listbox.insert("end", label)
+            self._leaver_listbox.itemconfig(i, fg=color)
+
+        if not self.leaver_tickets:
+            self._leaver_listbox.insert("end", "  No leaver tickets found")
+            self._leavers_status.set("No leaver tickets found.")
+
+    def _on_leaver_select(self, _=None):
+        sel = self._leaver_listbox.curselection()
+        if not sel or sel[0] >= len(self.leaver_tickets):
+            return
+        self._leaver_save_current_notes()
+        self._leaver_sel = sel[0]
+        self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
+
+    # ── Leavers detail ────────────────────────────────────────────────────────
+
+    def _show_leaver_detail(self, t: dict):
+        self._leaver_save_current_notes()
+        self._leaver_hint.place_forget()
+
+        for w in self._leaver_detail.winfo_children():
+            w.destroy()
+        self._leaver_notes_box = None
+        self._leaver_notes_ticket_id = None
+        self._leaver_comment_box = None
+        self._leaver_comment_ticket_id = None
+
+        self._leaver_detail_sb.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne", width=16)
+        self._leaver_detail_canvas.place(x=0, y=0, relwidth=1.0, relheight=1.0, width=-16)
+        self._leaver_detail_canvas.yview_moveto(0.0)
+
+        # Name + badge
+        name_row = tk.Frame(self._leaver_detail, bg=BG)
+        name_row.pack(anchor="w", padx=24, pady=(20, 2))
+        tk.Label(name_row, text=t["name"], bg=BG, fg=TEXT,
+                 font=("Segoe UI", 16, "bold")).pack(side="left")
+        tk.Label(name_row, text="Leaver", bg=RED, fg=WHITE,
+                 font=("Segoe UI", 9, "bold"), padx=8, pady=3,
+                 relief="flat").pack(side="left", padx=(12, 0))
+
+        # Last day date
+        today = date.today()
+        ld = t.get("last_day")
+        if ld:
+            delta = (ld - today).days
+            if delta < 0:
+                date_text  = f"{ld}  (left {-delta} day(s) ago)"
+                date_color = GRAY
+            elif delta == 0:
+                date_text  = f"{ld}  — LAST DAY TODAY"
+                date_color = RED
+            elif delta <= 3:
+                date_text  = f"{ld}  — leaves in {delta} day(s)"
+                date_color = "#FF991F"
+            else:
+                date_text  = f"{ld}  — in {delta} day(s)"
+                date_color = TEXT
+        else:
+            date_text  = "Last day: not set"
+            date_color = GRAY
+
+        tk.Label(self._leaver_detail, text=date_text, bg=BG, fg=date_color,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=24, pady=(0, 2))
+
+        meta_parts = []
+        if t.get("job_title"):   meta_parts.append(t["job_title"])
+        if t.get("department"):  meta_parts.append(t["department"])
+        if t.get("company"):     meta_parts.append(t["company"])
+        if t.get("status"):      meta_parts.append(t["status"])
+        if meta_parts:
+            tk.Label(self._leaver_detail, text="  |  ".join(meta_parts),
+                     bg=BG, fg=GRAY, font=("Segoe UI", 9),
+                     wraplength=500, justify="left").pack(anchor="w", padx=24, pady=(0, 2))
+
+        tk.Label(self._leaver_detail, text=t["key"], bg=BG, fg=GRAY,
+                 font=("Segoe UI", 8)).pack(anchor="w", padx=24, pady=(0, 10))
+
+        # Laptop card (auto-fetched from Snipe-IT)
+        self._leaver_laptop_frame = tk.Frame(
+            self._leaver_detail, bg=SOFT_BLUE,
+            highlightbackground=ACCENT, highlightthickness=1)
+        self._leaver_laptop_frame.pack(fill="x", padx=24, pady=(0, 10))
+        self._leaver_laptop_info = None
+        self._leaver_laptop_fetch_for = t["id"]
+        self._draw_laptop_card_loading()
+        if self._snipeit:
+            threading.Thread(
+                target=self._leaver_fetch_laptop,
+                args=(t,),
+                daemon=True,
+            ).start()
+        else:
+            self._draw_laptop_card_no_snipeit()
+
+        tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(0, 10))
+
+        # Notes
+        tk.Label(self._leaver_detail, text="Notes", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=24, pady=(0, 4))
+        notes_box = self._make_text_box(self._leaver_detail, height=5)
+        notes_box.insert("1.0", self.storage.get_notes(f"leaver_{t['id']}"))
+        notes_box.pack(fill="x", padx=24, pady=(0, 8))
+        self._leaver_notes_box = notes_box
+        self._leaver_notes_ticket_id = t["id"]
+        notes_box.bind("<KeyRelease>",
+                       lambda e, tid=t["id"], nb=notes_box:
+                       self._leaver_queue_notes_save(tid, nb))
+        notes_box.bind("<FocusOut>",
+                       lambda e, tid=t["id"], nb=notes_box:
+                       self._leaver_save_notes(tid, nb))
+        self._bind_text_widget_scroll(notes_box, self._leaver_detail_canvas)
+
+        tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(4, 8))
+
+        # Post comment
+        tk.Label(self._leaver_detail, text="Post comment", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=24, pady=(0, 4))
+        comment_box = self._make_text_box(self._leaver_detail, height=6)
+        comment_box.pack(fill="x", padx=24, pady=(0, 4))
+        self._leaver_comment_box = comment_box
+        self._leaver_comment_ticket_id = t["id"]
+        self._bind_text_widget_scroll(comment_box, self._leaver_detail_canvas)
+
+        post_row = tk.Frame(self._leaver_detail, bg=BG)
+        post_row.pack(anchor="e", padx=24, pady=(0, 8))
+        self._leaver_post_status = tk.Label(post_row, text="", bg=BG, fg=GRAY,
+                                            font=("Segoe UI", 9))
+        self._leaver_post_status.pack(side="left", padx=(0, 10))
+        self._make_btn(post_row, "Post buyout template",
+                       self._post_current_laptop_template,
+                       WHITE, GREEN, width=ACTION_BTN_WIDTH).pack(side="right", padx=(0, 8))
+        self._make_btn(post_row, "Post comment",
+                       lambda tid=t["id"], key=t["key"]: self._leaver_post_comment(tid, key),
+                       WHITE, ACCENT, width=ACTION_BTN_WIDTH).pack(side="right")
+
+        tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(4, 8))
+
+        # Comments
+        tk.Label(self._leaver_detail, text="Jira comments", bg=BG, fg=GRAY,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=24, pady=(0, 4))
+
+        comments_frame = tk.Frame(self._leaver_detail, bg=BG)
+        comments_frame.pack(fill="x", padx=24, pady=(0, 16))
+        comments_frame.columnconfigure(0, weight=1)
+
+        comments_box = self._make_text_box(comments_frame, height=12, readonly=True,
+                                           font=("Segoe UI", 9))
+        comments_sb = tk.Scrollbar(comments_frame, orient="vertical",
+                                   command=comments_box.yview)
+        comments_box.configure(yscrollcommand=comments_sb.set)
+        comments_box.grid(row=0, column=0, sticky="ew")
+        comments_sb.grid(row=0, column=1, sticky="ns")
+        self._bind_text_widget_scroll(comments_box, self._leaver_detail_canvas)
+
+        if t["key"] in self._leaver_comments_cache:
+            self._populate_comments(comments_box, self._leaver_comments_cache[t["key"]])
+        else:
+            self._set_comments_text(comments_box, "Loading...")
+
+        threading.Thread(
+            target=self._leaver_fetch_comments,
+            args=(t["key"], comments_box),
+            daemon=True,
+        ).start()
+
+        self._bind_leaver_detail_scroll(self._leaver_detail)
+        self._leavers_status.set(f"  {t['name']}")
+        self._update_leaver_open_btn()
+
+    def _bind_leaver_detail_scroll(self, widget):
+        widget.bind("<MouseWheel>",
+            lambda e: self._scroll_canvas_from_event(self._leaver_detail_canvas, e))
+        for child in widget.winfo_children():
+            if isinstance(child, tk.Text):
+                continue
+            self._bind_leaver_detail_scroll(child)
+
+    # ── Laptop card ───────────────────────────────────────────────────────────
+
+    def _draw_laptop_card_loading(self):
+        f = self._leaver_laptop_frame
+        for w in f.winfo_children(): w.destroy()
+        f.configure(bg=SOFT_BLUE, highlightbackground=ACCENT)
+        tk.Label(f, text="Laptop (Snipe-IT)", bg=SOFT_BLUE, fg=ACCENT,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(f, text="Searching inventory...", bg=SOFT_BLUE, fg=GRAY,
+                 font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=10, pady=(2, 8))
+
+    def _draw_laptop_card_no_snipeit(self):
+        f = self._leaver_laptop_frame
+        for w in f.winfo_children(): w.destroy()
+        f.configure(bg="#FFF4E5", highlightbackground="#FF991F")
+        tk.Label(f, text="Laptop (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(f, text="Add Snipe-IT credentials in Settings to auto-fetch laptop details.",
+                 bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(2, 8))
+
+    def _draw_laptop_card_found(self, laptop: dict):
+        f = self._leaver_laptop_frame
+        for w in f.winfo_children(): w.destroy()
+        f.configure(bg="#E7F4EC", highlightbackground="#B8E0C7")
+        tk.Label(f, text="Laptop (Snipe-IT)", bg="#E7F4EC", fg=GREEN,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+
+        info_row = tk.Frame(f, bg="#E7F4EC")
+        info_row.pack(fill="x", padx=10, pady=(2, 4))
+        tk.Label(info_row, text=f"Model:  {laptop['model']}", bg="#E7F4EC", fg=TEXT,
+                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
+        tk.Label(info_row, text=f"SN:       {laptop['serial']}", bg="#E7F4EC", fg=TEXT,
+                 font=("Segoe UI", 10)).pack(anchor="w")
+
+        btn_row = tk.Frame(f, bg="#E7F4EC")
+        btn_row.pack(anchor="w", padx=10, pady=(0, 8))
+        self._make_btn(btn_row, "Fill comment template",
+                       lambda: self._fill_laptop_comment_template(laptop),
+                       WHITE, GREEN, width=ACTION_BTN_WIDTH).pack(side="left")
+        self._make_btn(btn_row, "Post template comment",
+                       self._post_current_laptop_template,
+                       WHITE, ACCENT, width=ACTION_BTN_WIDTH).pack(side="left", padx=(8, 0))
+
+    def _draw_laptop_card_not_found(self):
+        f = self._leaver_laptop_frame
+        for w in f.winfo_children(): w.destroy()
+        f.configure(bg="#FFF4E5", highlightbackground="#FF991F")
+        tk.Label(f, text="Laptop (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(f, text="No laptop found in inventory for this person.",
+                 bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(2, 8))
+
+    def _leaver_fetch_laptop(self, t: dict):
+        """Background: search Snipe-IT for the leaver's laptop and update the card."""
+        ticket_id = t["id"]
+        try:
+            user = self._snipeit.find_user(t.get("first_name", ""), t.get("last_name", ""))
+            if not user:
+                laptop = None
+            else:
+                laptop = self._snipeit.get_laptop(user["id"])
+        except Exception:
+            laptop = None
+
+        def _update():
+            if self._leaver_laptop_fetch_for != ticket_id:
+                return  # user switched tickets while fetching
+            self._leaver_laptop_info = laptop
+            if not self._leaver_laptop_frame:
+                return
+            try:
+                if not self._leaver_laptop_frame.winfo_exists():
+                    return
+            except tk.TclError:
+                return
+            if laptop:
+                self._draw_laptop_card_found(laptop)
+            else:
+                self._draw_laptop_card_not_found()
+
+        self.after(0, _update)
+
+    @staticmethod
+    def _build_laptop_comment_template(laptop: dict) -> str:
+        return (
+            "Hello, please calculate residual value of laptop,\n\n"
+            f"Model: {laptop['model']}\n"
+            f"SN: {laptop['serial']}"
+        )
+
+    def _fill_laptop_comment_template(self, laptop: dict):
+        """Pre-fill the comment text box with the laptop buyout template."""
+        if not self._leaver_comment_box:
+            return
+        template = self._build_laptop_comment_template(laptop)
+        self._leaver_comment_box.delete("1.0", "end")
+        self._leaver_comment_box.insert("1.0", template)
+        self._leaver_detail_canvas.yview_moveto(0.7)  # scroll down to comment area
+
+    def _post_current_laptop_template(self):
+        if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
+            return
+        if not self._leaver_laptop_info:
+            messagebox.showinfo(
+                "Laptop not ready",
+                "Laptop details are not available yet. Wait for Snipe-IT to load or check whether a laptop was found.",
+                parent=self,
+            )
+            return
+
+        ticket = self.leaver_tickets[self._leaver_sel]
+        template = self._build_laptop_comment_template(self._leaver_laptop_info)
+        if self._leaver_comment_box:
+            self._leaver_comment_box.delete("1.0", "end")
+            self._leaver_comment_box.insert("1.0", template)
+        self._leaver_post_comment_text(
+            ticket["id"],
+            ticket["key"],
+            template,
+            success_text="Buyout template posted!",
+        )
+
+    # ── Add accountants automation ────────────────────────────────────────────
+
+    _ACCOUNTANTS_RULE_NAME = "Add accountants for deduction | LT Group 1"
+
+    def _leaver_add_accountants(self):
+        if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
+            return
+        t = self.leaver_tickets[self._leaver_sel]
+        if not messagebox.askyesno(
+            "Add accountants",
+            f"Trigger automation on {t['key']}?\n\n"
+            f'"{self._ACCOUNTANTS_RULE_NAME}"\n\n'
+            "This only triggers the Jira automation rule. Jira will handle adding accountants as request participants.",
+            parent=self,
+        ):
+            return
+        self._leavers_status.set("Triggering automation...")
+        self._add_accountants_btn.config(state="disabled")
+
+        def _do():
+            try:
+                self.jira.trigger_manual_automation(
+                    t["key"], t["id"], self._ACCOUNTANTS_RULE_NAME
+                )
+                self.after(0, lambda: self._leavers_status.set(
+                    f"Automation triggered for {t['key']}."))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: (
+                    self._leavers_status.set("Automation failed."),
+                    messagebox.showerror("Automation failed", err, parent=self),
+                ))
+            finally:
+                self.after(0, lambda: self._add_accountants_btn.config(state="normal"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    # ── Leavers comments ──────────────────────────────────────────────────────
+
+    def _leaver_fetch_comments(self, issue_key: str, box: tk.Text):
+        try:
+            comments = self.jira.get_comments(issue_key)
+            self._leaver_comments_cache[issue_key] = comments
+            self.after(0, lambda: self._populate_comments(box, comments))
+        except Exception as e:
+            self.after(0, lambda: self._set_comments_text(box, f"Could not load comments: {e}"))
+
+    def _leaver_post_comment(self, ticket_id: str, issue_key: str):
+        if not self._leaver_comment_box:
+            return
+        text = self._leaver_comment_box.get("1.0", "end-1c").strip()
+        if not text:
+            return
+        self._leaver_post_comment_text(ticket_id, issue_key, text)
+
+    def _leaver_post_comment_text(
+        self,
+        ticket_id: str,
+        issue_key: str,
+        text: str,
+        success_text: str = "Posted!",
+    ):
+        self._leaver_post_status.config(text="Posting...", fg=GRAY)
+        self.update()
+
+        def _do():
+            try:
+                self.jira.post_comment(issue_key, text)
+                self._leaver_comments_cache.pop(issue_key, None)
+                def _ok():
+                    self._leaver_post_status.config(text=success_text, fg=GREEN)
+                    if self._leaver_comment_box:
+                        self._leaver_comment_box.delete("1.0", "end")
+                    # Reload comments
+                    if (self._leaver_sel is not None
+                            and self._leaver_sel < len(self.leaver_tickets)
+                            and self.leaver_tickets[self._leaver_sel]["id"] == ticket_id):
+                        self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
+                self.after(0, _ok)
+            except Exception as e:
+                self.after(0, lambda: self._leaver_post_status.config(
+                    text=f"Error: {e}", fg=RED))
+        threading.Thread(target=_do, daemon=True).start()
+
+    # ── Leavers notes ─────────────────────────────────────────────────────────
+
+    def _leaver_queue_notes_save(self, ticket_id: str, notes_box: tk.Text):
+        if self._leaver_notes_save_job is not None:
+            try:
+                self.after_cancel(self._leaver_notes_save_job)
+            except tk.TclError:
+                pass
+        self._leaver_notes_save_job = self.after(
+            400, lambda: self._leaver_save_notes(ticket_id, notes_box))
+
+    def _leaver_save_notes(self, ticket_id: str, notes_box: tk.Text):
+        self._leaver_notes_save_job = None
+        try:
+            if notes_box.winfo_exists():
+                self.storage.set_notes(f"leaver_{ticket_id}", notes_box.get("1.0", "end-1c"))
+        except tk.TclError:
+            pass
+
+    def _leaver_save_current_notes(self):
+        if self._leaver_notes_ticket_id and self._leaver_notes_box:
+            self._leaver_save_notes(self._leaver_notes_ticket_id, self._leaver_notes_box)
+
+    # ── Leavers actions ───────────────────────────────────────────────────────
+
+    def _generate_leaver_return_act(self):
+        if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
+            return
+        ticket = self.leaver_tickets[self._leaver_sel]
+        if self._leaver_doc_btn:
+            self._leaver_doc_btn.config(state="disabled")
+        self._leavers_status.set("Generating return act...")
+
+        def _do():
+            try:
+                path, warnings = generate_leaver_return_document(ticket, self._snipeit)
+
+                def _ok():
+                    self._leavers_status.set(f"Return act generated for {ticket['key']}.")
+                    if hasattr(os, "startfile"):
+                        os.startfile(path)
+                    if warnings:
+                        messagebox.showwarning(
+                            "Return act generated",
+                            "The document was created, but some fields could not be filled automatically:\n\n"
+                            + "\n".join(f"- {warning}" for warning in warnings),
+                            parent=self,
+                        )
+
+                self.after(0, _ok)
+            except Exception as e:
+                self.after(0, lambda: (
+                    self._leavers_status.set("Return act generation failed."),
+                    messagebox.showerror("Return act generation failed", str(e), parent=self),
+                ))
+            finally:
+                if self._leaver_doc_btn:
+                    self.after(0, lambda: self._leaver_doc_btn.config(state="normal"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _leaver_open_jira(self):
+        if self._leaver_sel is not None and self._leaver_sel < len(self.leaver_tickets):
+            webbrowser.open(self.leaver_tickets[self._leaver_sel]["url"])
+
+    def _update_leaver_open_btn(self):
+        has_sel = (self._leaver_sel is not None
+                   and self._leaver_sel < len(self.leaver_tickets))
+        if self._leaver_open_btn:
+            if has_sel:
+                self._leaver_open_btn.config(state="normal", bg=ACCENT, fg=WHITE)
+            else:
+                self._leaver_open_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
+        if self._leaver_doc_btn:
+            if has_sel:
+                self._leaver_doc_btn.config(state="normal", bg=GREEN, fg=WHITE)
+            else:
+                self._leaver_doc_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
+        if self._add_accountants_btn:
+            if has_sel:
+                self._add_accountants_btn.config(state="normal", bg="#FF991F", fg=WHITE)
+            else:
+                self._add_accountants_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
+
+    def update_leaver_tickets(self, tickets: list):
+        self.leaver_tickets = tickets
+        self._refresh_leavers_list()
+        self._leavers_status.set(f"Loaded {len(tickets)} leaver ticket(s).")
+        if self._leaver_sel is not None and self._leaver_sel < len(tickets):
+            self._show_leaver_detail(tickets[self._leaver_sel])
+        self._update_leaver_open_btn()
 
     # ── Ticket list ───────────────────────────────────────────────────────────
 
@@ -273,11 +920,7 @@ class MainWindow(tk.Toplevel):
         tk.Label(self._detail, text="Notes", bg=BG, fg=GRAY,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=24, pady=(0, 4))
 
-        notes_box = tk.Text(
-            self._detail, height=4, relief="solid", bd=1,
-            font=("Segoe UI", 10), bg=WHITE, fg=TEXT,
-            wrap="word", padx=6, pady=4,
-        )
+        notes_box = self._make_text_box(self._detail, height=5)
         notes_box.insert("1.0", self.storage.get_notes(t["id"]))
         notes_box.pack(fill="x", padx=24, pady=(0, 8))
         self._notes_box = notes_box
@@ -288,6 +931,7 @@ class MainWindow(tk.Toplevel):
         notes_box.bind("<FocusOut>",
                        lambda e, tid=t["id"], nb=notes_box:
                        self._save_notes(tid, nb))
+        self._bind_text_widget_scroll(notes_box, self._detail_canvas)
 
         # Comments
         tk.Frame(self._detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(14, 8))
@@ -298,16 +942,14 @@ class MainWindow(tk.Toplevel):
         comments_frame.pack(fill="x", padx=24, pady=(0, 16))
         comments_frame.columnconfigure(0, weight=1)
 
-        comments_box = tk.Text(
-            comments_frame, height=10, relief="solid", bd=1,
-            font=("Segoe UI", 9), bg=WHITE, fg=TEXT,
-            wrap="word", padx=6, pady=4, state="disabled",
-        )
+        comments_box = self._make_text_box(comments_frame, height=12, readonly=True,
+                                           font=("Segoe UI", 9))
         comments_sb = tk.Scrollbar(comments_frame, orient="vertical",
                                    command=comments_box.yview)
         comments_box.configure(yscrollcommand=comments_sb.set)
         comments_box.grid(row=0, column=0, sticky="ew")
         comments_sb.grid(row=0, column=1, sticky="ns")
+        self._bind_text_widget_scroll(comments_box, self._detail_canvas)
 
         if t["key"] in self._comments_cache:
             cached_comments = self._comments_cache[t["key"]]
@@ -320,7 +962,7 @@ class MainWindow(tk.Toplevel):
                     daemon=True,
                 ).start()
         else:
-            self._set_comments_text(comments_box, "Loading…")
+            self._set_comments_text(comments_box, "Loading...")
 
         # Always refresh comments in the background so new Jira replies show up
         # even when the app has been running with a stale in-memory cache.
@@ -331,11 +973,6 @@ class MainWindow(tk.Toplevel):
         ).start()
 
         self._bind_detail_scroll(self._detail)
-        notes_box.bind("<MouseWheel>",
-            lambda e: notes_box.yview_scroll(int(-1 * e.delta / 120), "units"))
-        comments_box.bind("<MouseWheel>",
-            lambda e: comments_box.yview_scroll(int(-1 * e.delta / 120), "units"))
-
         done = self.storage.completed_count(t["id"], len(TASKS))
         self._status.set(f"  {done}/{len(TASKS)} tasks completed")
         self._update_ad_button()
@@ -344,8 +981,10 @@ class MainWindow(tk.Toplevel):
     def _bind_detail_scroll(self, widget):
         """Recursively bind mousewheel on all detail children to scroll the outer canvas."""
         widget.bind("<MouseWheel>",
-            lambda e: self._detail_canvas.yview_scroll(int(-1 * e.delta / 120), "units"))
+            lambda e: self._scroll_canvas_from_event(self._detail_canvas, e))
         for child in widget.winfo_children():
+            if isinstance(child, tk.Text):
+                continue
             self._bind_detail_scroll(child)
 
     def _toggle(self, ticket_id: str, idx: int, var: tk.BooleanVar):
@@ -426,7 +1065,7 @@ class MainWindow(tk.Toplevel):
             else:
                 self._draw_buddy_no_result(frame, tid)
         else:
-            tk.Label(frame, text="Scanning comments for buddy info…",
+            tk.Label(frame, text="Scanning comments for buddy info...",
                      bg=SOFT_BLUE, fg=GRAY,
                      font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=10, pady=6)
 
@@ -861,6 +1500,8 @@ class MainWindow(tk.Toplevel):
     def _do_refresh(self):
         self._status.set("Refreshing...")
         self.on_refresh()
+        if self.on_leaver_refresh:
+            self.on_leaver_refresh()
 
     def _backup_data(self):
         self._save_current_notes()
@@ -949,11 +1590,63 @@ class MainWindow(tk.Toplevel):
     # ── Helpers ───────────────────────────────────────────────────────────────
 
     @staticmethod
-    def _make_btn(parent, text, cmd, fg, bg):
+    def _make_btn(parent, text, cmd, fg, bg, width: int | None = None):
         return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
                          relief="flat", bd=0, font=("Segoe UI", 9),
-                         padx=10, pady=4, cursor="hand2",
+                         padx=10, pady=4, cursor="hand2", width=width,
                          activebackground=ACCENT, activeforeground=WHITE)
+
+    @staticmethod
+    def _make_text_box(parent, height: int, readonly: bool = False,
+                       font=("Segoe UI", 10)) -> tk.Text:
+        box = tk.Text(
+            parent,
+            height=height,
+            relief="flat",
+            bd=0,
+            font=font,
+            bg=INPUT_BG,
+            fg=TEXT,
+            wrap="word",
+            padx=8,
+            pady=6,
+            undo=not readonly,
+            insertbackground=TEXT,
+            highlightthickness=1,
+            highlightbackground=INPUT_BORDER,
+            highlightcolor=ACCENT,
+        )
+        if readonly:
+            box.config(state="disabled")
+        return box
+
+    @staticmethod
+    def _wheel_units(event) -> int:
+        delta = getattr(event, "delta", 0)
+        if not delta:
+            return -1
+        units = int(-delta / 120)
+        if units:
+            return units
+        return -1 if delta > 0 else 1
+
+    def _scroll_canvas_from_event(self, canvas: tk.Canvas, event) -> str:
+        canvas.yview_scroll(self._wheel_units(event), "units")
+        return "break"
+
+    def _bind_text_widget_scroll(self, widget: tk.Text, canvas: tk.Canvas):
+        def _on_wheel(event):
+            units = self._wheel_units(event)
+            first, last = widget.yview()
+            at_top = first <= 0.0
+            at_bottom = last >= 1.0
+            if (units < 0 and at_top) or (units > 0 and at_bottom):
+                canvas.yview_scroll(units, "units")
+            else:
+                widget.yview_scroll(units, "units")
+            return "break"
+
+        widget.bind("<MouseWheel>", _on_wheel)
 
 
 class SetupDialog(tk.Toplevel):
@@ -965,6 +1658,9 @@ class SetupDialog(tk.Toplevel):
         "api_token":             "",
         "jql":                   'assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)',
         "date_field":            "customfield_10980",
+        "leaver_jql":            'assignee = currentUser() AND labels = leaver AND status not in (Done, Closed, Resolved)',
+        "snipeit_url":           "https://inventory.girteka.eu",
+        "snipeit_token":         "",
         "remind_days_before":    "3",
         "check_interval_minutes": "30",
     }
@@ -1025,17 +1721,23 @@ class SetupDialog(tk.Toplevel):
         canvas.bind_all("<MouseWheel>", _on_mousewheel)
 
         fields = [
-            ("Jira URL",               "jira_url",              False,
+            ("Jira URL",               "jira_url",               False,
              "https://girteka.atlassian.net"),
-            ("Email",                  "email",                 False,
+            ("Email",                  "email",                  False,
              "Your Atlassian account email"),
-            ("API Token",              "api_token",             True,
+            ("API Token",              "api_token",              True,
              "Create at id.atlassian.com -> Security -> API tokens"),
-            ("JQL Query",              "jql",                   False,
+            ("Joiners JQL",            "jql",                    False,
              'Filter for onboarding tickets - issue type is "SF: Employee onboarding"'),
-            ("Start date field",       "date_field",            False,
+            ("Start date field",       "date_field",             False,
              "customfield_10980  (do not change unless Jira schema changed)"),
-            ("Remind N days before",   "remind_days_before",    False,
+            ("Leavers JQL",            "leaver_jql",             False,
+             'Filter for leaver tickets - label "leaver" in the ITHW project'),
+            ("Snipe-IT URL",           "snipeit_url",            False,
+             "https://inventory.girteka.eu"),
+            ("Snipe-IT API Token",     "snipeit_token",          True,
+             "Personal access token from Snipe-IT → Profile → API"),
+            ("Remind N days before",   "remind_days_before",     False,
              "3 = notify 3 days ahead and on the start day"),
             ("Check every N minutes",  "check_interval_minutes", False,
              "Background poll interval (30 is a good default)"),
@@ -1059,6 +1761,9 @@ class SetupDialog(tk.Toplevel):
             "api_token":              self._vars["api_token"].get().strip(),
             "jql":                    self._vars["jql"].get().strip(),
             "date_field":             self._vars["date_field"].get().strip() or "customfield_10980",
+            "leaver_jql":             self._vars["leaver_jql"].get().strip(),
+            "snipeit_url":            self._vars["snipeit_url"].get().strip().rstrip("/"),
+            "snipeit_token":          self._vars["snipeit_token"].get().strip(),
             "remind_days_before":     int(self._vars["remind_days_before"].get() or 3),
             "check_interval_minutes": int(self._vars["check_interval_minutes"].get() or 30),
         }

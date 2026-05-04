@@ -12,7 +12,8 @@ TASKS_FILE = DATA_DIR / "tasks.json"
 CONFIG_FILE = DATA_DIR / "config.json"
 DEFAULT_TASK_COUNT = 5
 
-_KEYRING_SERVICE = "jira-reminders"
+_KEYRING_SERVICE      = "jira-reminders"
+_SNIPEIT_KEYRING_USER = "snipeit-token"
 
 try:
     import keyring as _keyring
@@ -94,6 +95,17 @@ def delete_token(email: str) -> None:
             pass
 
 
+def save_snipeit_token(token: str) -> None:
+    if _KEYRING_OK and token:
+        _keyring.set_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER, token)
+
+
+def load_snipeit_token() -> str:
+    if _KEYRING_OK:
+        return _keyring.get_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER) or ""
+    return ""
+
+
 # ── Config ────────────────────────────────────────────────────────────────────
 
 def load_config() -> dict | None:
@@ -109,9 +121,10 @@ def load_config() -> dict | None:
             save_token(email, token)
         _save(CONFIG_FILE, cfg)
 
-    # Inject token from credential store
+    # Inject secrets from credential store
     email = cfg.get("email", "")
-    cfg["api_token"] = load_token(email)
+    cfg["api_token"]    = load_token(email)
+    cfg["snipeit_token"] = load_snipeit_token()
 
     return cfg if cfg else None
 
@@ -119,12 +132,15 @@ def load_config() -> dict | None:
 def save_config(cfg: dict) -> None:
     email = cfg.get("email", "")
     token = cfg.get("api_token", "")
-
     if email and token:
         save_token(email, token)
 
-    # Write everything except the token to disk
-    file_cfg = {k: v for k, v in cfg.items() if k != "api_token"}
+    snipeit_token = cfg.get("snipeit_token", "")
+    if snipeit_token:
+        save_snipeit_token(snipeit_token)
+
+    # Write everything except secrets to disk
+    file_cfg = {k: v for k, v in cfg.items() if k not in ("api_token", "snipeit_token")}
     _save(CONFIG_FILE, file_cfg)
 
 

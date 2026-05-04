@@ -190,6 +190,22 @@ _BASE_FETCH_FIELDS = [
     _CF_PHONE, _CF_COMPANY_NAME,
 ]
 
+# Leaver custom fields (ITHW project, label: leaver)
+_CF_LAST_DAY_OFFICE  = "customfield_10150"   # datepicker: last day in office
+_CF_LAST_WORKING_DAY = "customfield_10206"   # datepicker: last working day
+_CF_LAST_EMPLOY_DATE = "customfield_11003"   # textfield: last employment date (mixed formats)
+_CF_LEAVER_COMPANY   = "customfield_10993"   # readonlyfield: company name
+_CF_LEAVER_DEPT      = "customfield_10992"   # readonlyfield: department
+_CF_LEAVER_JOB_TITLE = "customfield_10996"   # readonlyfield: job title
+
+_LEAVER_FETCH_FIELDS = [
+    "summary", "status", "reporter", "assignee",
+    _CF_FIRST_NAME, _CF_LAST_NAME,
+    _CF_OFFICE,
+    _CF_LAST_DAY_OFFICE, _CF_LAST_WORKING_DAY, _CF_LAST_EMPLOY_DATE,
+    _CF_LEAVER_COMPANY, _CF_LEAVER_DEPT, _CF_LEAVER_JOB_TITLE,
+]
+
 
 def _parse_start_date(raw: str):
     raw = (raw or "").strip()
@@ -373,3 +389,120 @@ class JiraClient:
         tickets = [t for t in tickets if t["start_date"] is None or t["start_date"] >= cutoff]
 
         return tickets
+
+    def get_cloud_id(self) -> str:
+        """Returns the Atlassian Cloud tenant ID needed for the automation API."""
+        r = self.session.get(f"{self.base}/_edge/tenant_info", timeout=10)
+        r.raise_for_status()
+        data = r.json()
+        cloud_id = data.get("cloudId") or data.get("site_id", "")
+        if not cloud_id:
+            raise ValueError(f"Could not get cloud ID from tenant info: {data}")
+        return cloud_id
+
+    def trigger_manual_automation(self, issue_key: str, issue_id: str, rule_name: str) -> None:
+        """
+        Trigger a Jira Automation manual rule by name for the given issue.
+
+        API (discovered via DevTools):
+          POST .../pro/rest/v1/rules/manual/search          → list available rules
+          POST .../pro/rest/v1/rules/manual/invocation/{id} → trigger a rule
+        Both use ARI objects: ["ari:cloud:jira:{cloudId}:issue/{issueId}"]
+        """
+        cloud_id = self.get_cloud_id()
+        ari      = f"ari:cloud:jira:{cloud_id}:issue/{issue_id}"
+        base     = (f"{self.base}/gateway/api/automation/internal-api"
+                    f"/jira/{cloud_id}/pro/rest/v1/rules/manual")
+
+        # List manual rules available for this issue
+        r = self.session.post(
+            f"{base}/search",
+            json={"objects": [ari]},
+            timeout=15,
+        )
+        r.raise_for_status()
+        data  = r.json()
+        rules = data if isinstance(data, list) else data.get("rules", data.get("values", []))
+
+        match = next(
+            (rl for rl in rules if rl.get("name", "").strip() == rule_name.strip()),
+            None,
+        )
+        if not match:
+            available = [rl.get("name", "") for rl in rules]
+            raise ValueError(
+                f"Automation rule '{rule_name}' not found for {issue_key}.\n"
+                f"Available: {', '.join(available) or 'none'}"
+            )
+
+        rule_id = match.get("idUuid") or match.get("id")
+        if not rule_id:
+            raise ValueError(
+                f"Automation rule '{rule_name}' for {issue_key} did not include an invocation ID."
+            )
+
+        # Trigger the matched rule
+        self.session.post(
+            f"{base}/invocation/{rule_id}",
+            json={"objects": [ari]},
+            timeout=15,
+        ).raise_for_status()
+
+    def get_leaver_tickets(self, jql: str) -> list[dict]:
+        params = {
+            "jql": jql,
+            "fields": ",".join(_LEAVER_FETCH_FIELDS),
+            "maxResults": 50,
+        }
+        r = self.session.get(
+            f"{self.base}/rest/api/3/search/jql",
+            params=params,
+            timeout=15,
+        )
+        r.raise_for_status()
+
+        def _clean(v) -> str:
+            s = (v or "").strip()
+            return "" if s in ("None", "none", "-") else s
+
+        tickets = []
+        for issue in r.json().get("issues", []):
+            f = issue["fields"]
+
+            first = (f.get(_CF_FIRST_NAME) or "").strip()
+            last  = (f.get(_CF_LAST_NAME)  or "").strip()
+            name  = f"{first} {last}".strip() or f.get("summary", issue["key"])
+
+            # Prefer the datepicker field; fall back to the text field
+            last_day_raw = (f.get(_CF_LAST_DAY_OFFICE)
+                            or f.get(_CF_LAST_WORKING_DAY)
+                            or f.get(_CF_LAST_EMPLOY_DATE)
+                            or "")
+            last_day = _parse_start_date(last_day_raw)
+
+            reporter_raw = f.get("reporter") or {}
+            assignee_raw = f.get("assignee") or {}
+
+            tickets.append({
+                "id":           issue["id"],
+                "key":          issue["key"],
+                "summary":      f.get("summary", issue["key"]),
+                "name":         name,
+                "first_name":   first,
+                "last_name":    last,
+                "last_day":     last_day,
+                "office":       _clean(f.get(_CF_OFFICE)),
+                "company":      _clean(f.get(_CF_LEAVER_COMPANY)),
+                "department":   _clean(f.get(_CF_LEAVER_DEPT)),
+                "job_title":    _clean(f.get(_CF_LEAVER_JOB_TITLE)),
+                "status":       (f.get("status") or {}).get("name", ""),
+                "url":          f"{self.base}/browse/{issue['key']}",
+                "assignee_id":  assignee_raw.get("accountId", ""),
+                "assignee_name": assignee_raw.get("displayName", ""),
+                "reporter_id":  reporter_raw.get("accountId", ""),
+                "reporter_name": reporter_raw.get("displayName", ""),
+            })
+
+        tickets.sort(key=lambda t: t["last_day"] or date.max)
+        cutoff = date.today() - timedelta(days=1)
+        return [t for t in tickets if t["last_day"] is None or t["last_day"] >= cutoff]
