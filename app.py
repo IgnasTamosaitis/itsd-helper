@@ -13,6 +13,7 @@ import pystray
 from PIL import Image, ImageDraw
 
 from jira_client import JiraClient
+from snipeit_client import SnipeITClient
 from storage import TaskStorage, load_config, save_config
 from ui import MainWindow, SetupDialog, TASKS
 
@@ -57,11 +58,14 @@ class App:
         self._ui_queue: queue.Queue = queue.Queue()
         self._tickets: list[dict] = []
         self._tickets_lock = threading.Lock()
+        self._leaver_tickets: list[dict] = []
+        self._leaver_tickets_lock = threading.Lock()
         self._window: MainWindow | None = None
         self._jira: JiraClient | None = None
         self._storage = TaskStorage()
         self._config: dict = {}
         self._tray: pystray.Icon | None = None
+        self._snipeit: SnipeITClient | None = None
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -100,15 +104,37 @@ class App:
     def _apply_config(self, cfg: dict) -> None:
         self._config = cfg
         self._jira = JiraClient(cfg["jira_url"], cfg["email"], cfg["api_token"])
+        snipeit_url   = cfg.get("snipeit_url", "").strip()
+        snipeit_token = cfg.get("snipeit_token", "").strip()
+        self._snipeit = SnipeITClient(snipeit_url, snipeit_token) if snipeit_url and snipeit_token else None
 
     # ── Background polling ────────────────────────────────────────────────────
 
     def _poll_loop(self) -> None:
         self._fetch_and_notify()
+        self._fetch_leavers()
         interval = int(self._config.get("check_interval_minutes", 30)) * 60
         while True:
             time.sleep(interval)
             self._fetch_and_notify()
+            self._fetch_leavers()
+
+    _DEFAULT_LEAVER_JQL = (
+        'assignee = currentUser() AND labels = leaver '
+        'AND status not in (Done, Closed, Resolved)'
+    )
+
+    def _fetch_leavers(self) -> None:
+        if not self._jira:
+            return
+        jql = self._config.get("leaver_jql", "").strip() or self._DEFAULT_LEAVER_JQL
+        try:
+            tickets = self._jira.get_leaver_tickets(jql)
+            with self._leaver_tickets_lock:
+                self._leaver_tickets = tickets
+            self._ui_queue.put(("update_leaver_tickets", tickets))
+        except Exception as e:
+            print(f"[poll leavers] {e}")
 
     def _fetch_and_notify(self) -> None:
         if not self._jira:
@@ -214,6 +240,8 @@ class App:
                     self._show_window()
                 elif cmd == "update_tickets" and self._window:
                     self._window.update_tickets(args[0])
+                elif cmd == "update_leaver_tickets" and self._window:
+                    self._window.update_leaver_tickets(args[0])
                 elif cmd == "open_settings":
                     self._open_settings()
         except queue.Empty:
@@ -234,12 +262,18 @@ class App:
             self._storage,
             self._jira,
             on_refresh=self._manual_refresh,
+            leaver_tickets=self._leaver_tickets,
+            on_leaver_refresh=self._manual_refresh_leavers,
+            snipeit=self._snipeit,
         )
         self._window.lift()
         self._window.focus_force()
 
     def _manual_refresh(self) -> None:
         threading.Thread(target=self._fetch_and_notify, daemon=True).start()
+
+    def _manual_refresh_leavers(self) -> None:
+        threading.Thread(target=self._fetch_leavers, daemon=True).start()
 
     def _open_settings(self) -> None:
         dlg = SetupDialog(self._root, prefill=self._config)
@@ -261,6 +295,7 @@ class App:
 
     def _tray_check_now(self, icon=None, item=None):
         threading.Thread(target=self._fetch_and_notify, daemon=True).start()
+        threading.Thread(target=self._fetch_leavers, daemon=True).start()
 
     def _tray_settings(self, icon=None, item=None):
         self._ui_queue.put(("open_settings",))

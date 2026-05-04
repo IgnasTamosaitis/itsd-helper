@@ -2,6 +2,71 @@
 
 ---
 
+## v1.1.0 — Leavers Workflow, Snipe-IT Integration, and UI Polish
+
+This release expands the app from a joiner-focused workflow into a full ITSD helper for both onboarding and offboarding. It adds a dedicated Leavers workspace, Jira automation support, Snipe-IT integration, document generation, and a broader UI cleanup pass.
+
+---
+
+### Leavers workflow
+
+- Added a dedicated **Leavers** tab in the main window
+- Added polling and manual refresh support for leaver tickets
+- Added per-ticket leaver detail view with date/status metadata, notes, comments, and offboarding actions
+- Added leaver-specific Jira JQL configuration in Settings
+
+### Jira automation
+
+- Added support for Jira manual automation rules through the internal automation API
+- Added the **Add accountants** action for the rule `Add accountants for deduction | LT Group 1`
+- Fixed rule triggering to use the correct `idUuid` invocation identifier from the Jira search response
+- Updated UI text so this action is clearly documented as a Jira automation trigger, not a workflow transition
+
+### Snipe-IT integration
+
+- Added `snipeit_client.py`
+- Added Snipe-IT URL and token fields to Settings
+- Added secure token storage for Snipe-IT in Windows Credential Manager alongside the Jira token
+- Added user lookup, user-details lookup, and assigned-asset lookup in Snipe-IT
+- Added laptop auto-detection for leaver buyout flow using category/model scoring
+- Added reusable buyout comment autofill and direct posting using Snipe-IT laptop model and serial number
+
+### Return act generation
+
+- Added `leaver_document.py`
+- Added a tracked Word template under `templates/leaver_return_template.docx`
+- Added **Generate return act** in the leaver view
+- The generated document fills:
+  - leaver name
+  - leaver role
+  - return date
+  - receiver name from the Jira assignee
+  - location from Jira/Snipe-IT data
+  - employee contact email
+  - Jira ticket key
+  - equipment rows from assigned Snipe-IT assets when available
+- Added `python-docx` dependency
+- Added `generated_docs/` to `.gitignore`
+
+### UI polish
+
+- Standardised bottom-bar action button widths for cleaner alignment
+- Reworked notes/comment text boxes with a more consistent visual style
+- Increased text area heights to reduce cramped editing
+- Improved mousewheel handling so scrolling works properly while the cursor is over text boxes and hands off to the outer panel at the bounds
+- Cleaned up loading/status text in the detail views
+
+### Jira data model changes
+
+- Added leaver ticket fetching in `jira_client.py`
+- Included assignee and office data in leaver ticket payloads so the receiver and document location can be filled automatically
+
+### Notes
+
+- Return-act generation is resilient: if Snipe-IT returns no assigned assets, the document is still created and the user gets a warning instead of a hard failure
+
+---
+
 ## v1.0.2 — Hardened & Complete: New Joiner Onboarding
 
 This release completes the New Joiner onboarding workflow and hardens the application for production use in a corporate environment. All known security gaps have been addressed and UI responsiveness has been significantly improved.

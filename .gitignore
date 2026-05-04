@@ -12,3 +12,6 @@ __pycache__/
 *.swp
 .DS_Store
 Thumbs.db
+
+# Generated documents
+generated_docs/
