@@ -126,17 +126,13 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
     ps1 = _STAGING_DIR / "_apply_update.ps1"
     ps1.write_text("\n".join(ps_lines), encoding="utf-8")
 
-    # Launch via a VBS wrapper — same pattern as start_reminders.vbs,
-    # guaranteed to survive the parent process exiting on this machine.
-    vbs = _STAGING_DIR / "_launch_update.vbs"
-    vbs.write_text(
-        f'Set sh = CreateObject("WScript.Shell")\n'
-        f'sh.Run "powershell -NoProfile -ExecutionPolicy Bypass'
-        f' -WindowStyle Hidden -File ""{ps1}""", 0, False\n',
-        encoding="utf-8",
+    subprocess.Popen(
+        [
+            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
+            "-WindowStyle", "Hidden", "-File", str(ps1),
+        ],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
     )
-
-    subprocess.Popen(["wscript", str(vbs)])
 
 
 def remove_startup_shortcut() -> bool:
