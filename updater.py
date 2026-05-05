@@ -110,17 +110,18 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
         f"Get-ChildItem -Path {q(src)} -Filter '*.py' | Copy-Item -Destination {q(APP_DIR)} -Force",
         # Stamp version immediately so repeated update prompts stop even if later steps fail
         f"Set-Content -Path {q(VERSION_FILE)} -Value '{new_version}'",
-        # Best-effort: templates and requirements (failures won't abort the restart)
+        # Best-effort: copy templates
         f"if (Test-Path {q(src / 'templates')}) {{",
         f"    robocopy {q(src / 'templates')} {q(APP_DIR / 'templates')} /E /IS /IT /IM | Out-Null",
         f"}}",
+        # Restart app NOW — before pip install which can block for seconds
+        f"& C:\\Windows\\System32\\wscript.exe {q(launcher)}",
+        f"Start-Sleep -Seconds 2",
+        # Best-effort: update dependencies after app has already been restarted
         f"if (Test-Path {q(src / 'requirements.txt')}) {{",
         f"    Copy-Item -Path {q(src / 'requirements.txt')} -Destination {q(APP_DIR / 'requirements.txt')} -Force",
         f"    & pip install -r {q(APP_DIR / 'requirements.txt')} --quiet",
         f"}}",
-        # Restart app before trying to delete staging (PS1 is inside staging, delete may fail — that's OK)
-        f"& wscript {q(launcher)}",
-        f"Start-Sleep -Seconds 2",
         f"Remove-Item -Path {q(_STAGING_DIR)} -Recurse -Force -ErrorAction SilentlyContinue",
     ]
     ps1 = _STAGING_DIR / "_apply_update.ps1"
