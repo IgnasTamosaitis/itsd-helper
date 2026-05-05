@@ -101,28 +101,36 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
     def q(p: Path) -> str:
         return f"'{p}'"
 
+    log = APP_DIR / "update.log"
+
+    def log_line(msg: str) -> str:
+        return f"Add-Content -Path {q(log)} -Value \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') {msg}\""
+
     ps_lines = [
         "$ErrorActionPreference = 'Continue'",
+        log_line(f"update started: {new_version}"),
         "Start-Sleep -Seconds 3",
-        # Strip read-only/hidden attributes GitHub zips sometimes set
+        log_line("fixing attributes"),
         f"Get-ChildItem -Path {q(src)} -Recurse | ForEach-Object {{ try {{ $_.Attributes = 'Normal' }} catch {{}} }}",
-        # Copy .py files — core step
+        log_line("copying .py files"),
         f"Get-ChildItem -Path {q(src)} -Filter '*.py' | Copy-Item -Destination {q(APP_DIR)} -Force",
-        # Stamp version immediately so repeated update prompts stop even if later steps fail
+        log_line("stamping version"),
         f"Set-Content -Path {q(VERSION_FILE)} -Value '{new_version}'",
-        # Best-effort: copy templates
+        log_line("copying templates"),
         f"if (Test-Path {q(src / 'templates')}) {{",
         f"    robocopy {q(src / 'templates')} {q(APP_DIR / 'templates')} /E /IS /IT /IM | Out-Null",
         f"}}",
-        # Restart app NOW — before pip install which can block for seconds
+        log_line("launching app"),
         f"& C:\\Windows\\System32\\wscript.exe {q(launcher)}",
         f"Start-Sleep -Seconds 2",
-        # Best-effort: update dependencies after app has already been restarted
+        log_line("running pip install"),
         f"if (Test-Path {q(src / 'requirements.txt')}) {{",
         f"    Copy-Item -Path {q(src / 'requirements.txt')} -Destination {q(APP_DIR / 'requirements.txt')} -Force",
         f"    & pip install -r {q(APP_DIR / 'requirements.txt')} --quiet",
         f"}}",
+        log_line("cleaning up staging"),
         f"Remove-Item -Path {q(_STAGING_DIR)} -Recurse -Force -ErrorAction SilentlyContinue",
+        log_line("done"),
     ]
     ps1 = _STAGING_DIR / "_apply_update.ps1"
     ps1.write_text("\n".join(ps_lines), encoding="utf-8")
