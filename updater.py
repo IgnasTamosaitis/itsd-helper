@@ -49,10 +49,28 @@ def check_for_update() -> dict | None:
     return None
 
 
+def _force_remove(path: Path) -> None:
+    """Remove a directory tree, resetting permissions first if needed."""
+    if not path.exists():
+        return
+    for p in path.rglob("*"):
+        try:
+            p.chmod(0o777)
+        except Exception:
+            pass
+    shutil.rmtree(path, ignore_errors=True)
+    if path.exists():
+        # Last resort: let PowerShell do it
+        subprocess.run(
+            ["powershell", "-NoProfile", "-Command",
+             f"Remove-Item -Path '{path}' -Recurse -Force -ErrorAction SilentlyContinue"],
+            creationflags=subprocess.CREATE_NO_WINDOW,
+        )
+
+
 def download_and_apply(release: dict, progress_cb=None) -> None:
     """Download the release zip and schedule file replacement after the app exits."""
-    if _STAGING_DIR.exists():
-        shutil.rmtree(_STAGING_DIR)
+    _force_remove(_STAGING_DIR)
     _STAGING_DIR.mkdir()
 
     zip_path = _STAGING_DIR / "update.zip"
