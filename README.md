@@ -211,7 +211,7 @@ When the app starts for the first time, a settings window opens automatically. F
 | Leavers JQL | The filter that returns your leaver tickets |
 | Start date field | Leave as default unless your Jira schema has changed |
 | Snipe-IT URL | Your Snipe-IT base URL, for example `https://inventory.girteka.eu` |
-| Snipe-IT API Token | Personal access token used for asset lookups |
+| Snipe-IT API Token | Shared IT team token — ask your IT lead for this |
 | Remind N days before | How many days ahead to start sending notifications (default: 3) |
 | Check every N minutes | How often the app polls Jira in the background (default: 30) |
 
