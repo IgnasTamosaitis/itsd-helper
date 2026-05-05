@@ -71,9 +71,6 @@ class MainWindow(tk.Toplevel):
         self._leaver_open_btn: tk.Button | None = None
         self._add_accountants_btn: tk.Button | None = None
         self._leaver_doc_btn: tk.Button | None = None
-        self._leaver_notes_box: tk.Text | None = None
-        self._leaver_notes_ticket_id: str | None = None
-        self._leaver_notes_save_job = None
         self._leaver_comments_cache: dict = {}
         self._leaver_comment_box: tk.Text | None = None
         self._leaver_comment_ticket_id: str | None = None
@@ -105,6 +102,7 @@ class MainWindow(tk.Toplevel):
 
         # ── Tab strip ─────────────────────────────────────────────────────────────
         tab_strip = tk.Frame(self, bg=WHITE, height=38)
+        self._tab_strip = tab_strip
         tab_strip.pack(fill="x")
         tab_strip.pack_propagate(False)
         self._tab_btns: dict[str, tk.Button] = {}
@@ -130,6 +128,49 @@ class MainWindow(tk.Toplevel):
 
         self._active_tab: str = ""
         self._switch_tab("joiners")
+
+    def show_update_banner(self, version: str, on_install) -> None:
+        if getattr(self, "_update_banner", None):
+            return
+        BANNER_BG = "#FFFAE6"
+        BANNER_FG = "#172B4D"
+        AMBER     = "#FF991F"
+
+        banner = tk.Frame(self, bg=BANNER_BG, height=34)
+        banner.pack(fill="x", before=self._tab_strip)
+        banner.pack_propagate(False)
+        self._update_banner = banner
+
+        tk.Label(
+            banner,
+            text=f"  ⬆  Version {version} is available — install and restart to update.",
+            bg=BANNER_BG, fg=BANNER_FG,
+            font=("Segoe UI", 9),
+        ).pack(side="left", padx=(8, 0))
+
+        def _dismiss():
+            banner.destroy()
+            self._update_banner = None
+
+        def _install():
+            _dismiss()
+            on_install()
+
+        tk.Button(
+            banner, text="Install & restart",
+            bg=AMBER, fg=WHITE, relief="flat", bd=0,
+            font=("Segoe UI", 9, "bold"), padx=10, cursor="hand2",
+            activebackground="#E08010", activeforeground=WHITE,
+            command=_install,
+        ).pack(side="right", padx=(4, 8), pady=4)
+
+        tk.Button(
+            banner, text="×",
+            bg=BANNER_BG, fg=GRAY, relief="flat", bd=0,
+            font=("Segoe UI", 11), padx=6, cursor="hand2",
+            activebackground=BANNER_BG, activeforeground=TEXT,
+            command=_dismiss,
+        ).pack(side="right", pady=4)
 
     def _switch_tab(self, key: str):
         if self._active_tab == key:
@@ -313,20 +354,16 @@ class MainWindow(tk.Toplevel):
         sel = self._leaver_listbox.curselection()
         if not sel or sel[0] >= len(self.leaver_tickets):
             return
-        self._leaver_save_current_notes()
         self._leaver_sel = sel[0]
         self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
 
     # ── Leavers detail ────────────────────────────────────────────────────────
 
     def _show_leaver_detail(self, t: dict):
-        self._leaver_save_current_notes()
         self._leaver_hint.place_forget()
 
         for w in self._leaver_detail.winfo_children():
             w.destroy()
-        self._leaver_notes_box = None
-        self._leaver_notes_ticket_id = None
         self._leaver_comment_box = None
         self._leaver_comment_ticket_id = None
 
@@ -398,24 +435,6 @@ class MainWindow(tk.Toplevel):
             self._draw_laptop_card_no_snipeit()
 
         tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(0, 10))
-
-        # Notes
-        tk.Label(self._leaver_detail, text="Notes", bg=BG, fg=GRAY,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=24, pady=(0, 4))
-        notes_box = self._make_text_box(self._leaver_detail, height=5)
-        notes_box.insert("1.0", self.storage.get_notes(f"leaver_{t['id']}"))
-        notes_box.pack(fill="x", padx=24, pady=(0, 8))
-        self._leaver_notes_box = notes_box
-        self._leaver_notes_ticket_id = t["id"]
-        notes_box.bind("<KeyRelease>",
-                       lambda e, tid=t["id"], nb=notes_box:
-                       self._leaver_queue_notes_save(tid, nb))
-        notes_box.bind("<FocusOut>",
-                       lambda e, tid=t["id"], nb=notes_box:
-                       self._leaver_save_notes(tid, nb))
-        self._bind_text_widget_scroll(notes_box, self._leaver_detail_canvas)
-
-        tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(4, 8))
 
         # Post comment
         tk.Label(self._leaver_detail, text="Post comment", bg=BG, fg=GRAY,
@@ -689,27 +708,6 @@ class MainWindow(tk.Toplevel):
 
     # ── Leavers notes ─────────────────────────────────────────────────────────
 
-    def _leaver_queue_notes_save(self, ticket_id: str, notes_box: tk.Text):
-        if self._leaver_notes_save_job is not None:
-            try:
-                self.after_cancel(self._leaver_notes_save_job)
-            except tk.TclError:
-                pass
-        self._leaver_notes_save_job = self.after(
-            400, lambda: self._leaver_save_notes(ticket_id, notes_box))
-
-    def _leaver_save_notes(self, ticket_id: str, notes_box: tk.Text):
-        self._leaver_notes_save_job = None
-        try:
-            if notes_box.winfo_exists():
-                self.storage.set_notes(f"leaver_{ticket_id}", notes_box.get("1.0", "end-1c"))
-        except tk.TclError:
-            pass
-
-    def _leaver_save_current_notes(self):
-        if self._leaver_notes_ticket_id and self._leaver_notes_box:
-            self._leaver_save_notes(self._leaver_notes_ticket_id, self._leaver_notes_box)
-
     # ── Leavers actions ───────────────────────────────────────────────────────
 
     def _generate_leaver_return_act(self):
@@ -722,6 +720,52 @@ class MainWindow(tk.Toplevel):
 
         def _do():
             try:
+                asset_warning = None
+                if self._snipeit:
+                    try:
+                        user = self._snipeit.find_user(
+                            ticket.get("first_name", ""), ticket.get("last_name", "")
+                        )
+                        if user:
+                            assets = self._snipeit.get_user_assets(user["id"])
+                            if not assets:
+                                asset_warning = (
+                                    f"Snipe-IT found the user but no assets are assigned to "
+                                    f"{ticket.get('name', 'this person')}.\n\n"
+                                    "The asset table in the return act will be empty.\n\n"
+                                    "Generate anyway?"
+                                )
+                        else:
+                            asset_warning = (
+                                f"Snipe-IT could not find a user matching "
+                                f"{ticket.get('name', 'this person')}.\n\n"
+                                "The asset table in the return act will be empty.\n\n"
+                                "Generate anyway?"
+                            )
+                    except Exception as exc:
+                        asset_warning = (
+                            f"Snipe-IT lookup failed: {exc}\n\n"
+                            "The asset table in the return act will be empty.\n\n"
+                            "Generate anyway?"
+                        )
+
+                if asset_warning:
+                    proceed = threading.Event()
+                    confirmed = [False]
+
+                    def _ask():
+                        confirmed[0] = messagebox.askyesno(
+                            "No assets found", asset_warning, parent=self
+                        )
+                        proceed.set()
+
+                    self.after(0, _ask)
+                    proceed.wait()
+
+                    if not confirmed[0]:
+                        self.after(0, lambda: self._leavers_status.set("Return act cancelled."))
+                        return
+
                 path, warnings = generate_leaver_return_document(ticket, self._snipeit)
 
                 def _ok():
@@ -1660,7 +1704,7 @@ class SetupDialog(tk.Toplevel):
         "date_field":            "customfield_10980",
         "leaver_jql":            'assignee = currentUser() AND labels = leaver AND status not in (Done, Closed, Resolved)',
         "snipeit_url":           "https://inventory.girteka.eu",
-        "snipeit_token":         "",
+        "snipeit_token":         "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiI1IiwianRpIjoiODk2MTZmODRiY2UwODM2ZGEwNzY2YWM3MGJhNThhY2JlMDFjYTdiYjAwODEzYWMxZjkxMGI2MmZiNWQ1OTAxNTNmZTY1NjNjNGM0OWUyZjMiLCJpYXQiOjE3NTkzOTA5NDYuMzkxMDE3LCJuYmYiOjE3NTkzOTA5NDYuMzkxMDE5LCJleHAiOjMwMjE2OTQ5NDYuMzc2NDg4LCJzdWIiOiIxODk2MiIsInNjb3BlcyI6W119.M2KctkkBSq5jFpg1St50ZumDKKbPvq5SXGOUSMsPkrgQDrgWhIC8hgw6yq9F-wJOCv07bx0MDUvhFmxkTdO-1ToWd6tyM0QjUclFTdpFiqCD71xPsTi4936DA1wM0BSHhiYig9Hr5XsHRFzhDDgVhO6q9dwUHguR7PBH9rv5Aj1eGPGtBTvjDvLB0ew4IEnubyf8QPvV_8I5i4G3luRHdsyRhAV1n_Ionljkc2zVv1Wh8AXQl3fjZUBuuMpOEGi2iTvTkg6jpy51HGPXa7T663UmZh3vaUWQD8VPmQEc-5P1jJgkTm1vgl2TI2wWvkPilv4O3XvUorTwq9yg8DTQsgsQ2re5MUDlR4ImlMH85GrrffrcqGVoQlKMl7yiVtwSE7J8EDuFjmuLyfSxQ4lv_oFNsGVMrtI4o3YjkR_XF_r9U2a3N9SMDzqJZvWiM1Ku80LKS8iFrDYyn0HlG7a9UlVQvLSeulblBcIxVNrF9-uK5fgYZfcAD8OIFWXknudqob0Mcf17nFeznai8joX_RRBM6t9Irhgs1KQEKZK0FhCUDmijZtpWBBv8xQT-B4jCXMuvNzNLA9Mtc68Eoj7cy_fcc4DYDYsmr8x41HHeqqnhVDA-V7HhrOU43llYJ_DqBxODvQECaqozdN5FCJfDzRCWKxvQHyzA8EZhI2QKyzo",
         "remind_days_before":    "3",
         "check_interval_minutes": "30",
     }

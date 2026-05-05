@@ -16,6 +16,7 @@ from jira_client import JiraClient
 from snipeit_client import SnipeITClient
 from storage import TaskStorage, load_config, save_config
 from ui import MainWindow, SetupDialog, TASKS
+import updater
 
 APP_NAME = "Jira Reminders"
 MORNING_HOUR = 9   # send daily summary at 9:00 AM
@@ -66,6 +67,7 @@ class App:
         self._config: dict = {}
         self._tray: pystray.Icon | None = None
         self._snipeit: SnipeITClient | None = None
+        self._pending_update: dict | None = None
 
     # ── Startup ───────────────────────────────────────────────────────────────
 
@@ -84,17 +86,21 @@ class App:
             _make_icon_image(),
             APP_NAME,
             menu=pystray.Menu(
-                pystray.MenuItem("Show tickets",  self._tray_show),
-                pystray.MenuItem("Check now",     self._tray_check_now),
-                pystray.MenuItem("Settings",      self._tray_settings),
+                pystray.MenuItem("Show tickets",      self._tray_show),
+                pystray.MenuItem("Check now",         self._tray_check_now),
+                pystray.MenuItem("Settings",          self._tray_settings),
                 pystray.Menu.SEPARATOR,
-                pystray.MenuItem("Quit",          self._tray_quit),
+                pystray.MenuItem("Check for updates", self._tray_check_updates),
+                pystray.MenuItem("Uninstall",         self._tray_uninstall),
+                pystray.Menu.SEPARATOR,
+                pystray.MenuItem("Quit",              self._tray_quit),
             ),
         )
         self._tray.run_detached()
 
         threading.Thread(target=self._poll_loop,             daemon=True).start()
         threading.Thread(target=self._morning_summary_loop, daemon=True).start()
+        threading.Thread(target=self._update_check_loop,    daemon=True).start()
 
         # Launch with the main ticket window visible while keeping the app rooted in the tray.
         self._root.after(0, self._show_window)
@@ -230,6 +236,68 @@ class App:
         )
         self._storage.mark_morning_summary_sent()
 
+    # ── Auto-update ───────────────────────────────────────────────────────────
+
+    def _update_check_loop(self) -> None:
+        time.sleep(5)  # let the app finish starting before hitting the network
+        self._do_update_check()
+
+    def _do_update_check(self) -> None:
+        release = updater.check_for_update()
+        if release:
+            self._ui_queue.put(("update_available", release))
+
+    def _handle_update_available(self, release: dict) -> None:
+        def _do_install():
+            import tkinter.messagebox as mb
+            try:
+                updater.download_and_apply(release)
+            except Exception as e:
+                mb.showerror("Update failed", str(e), parent=self._root)
+                return
+            if self._tray:
+                self._tray.stop()
+            self._root.quit()
+
+        self._pending_update = release
+        if self._window and tk.Toplevel.winfo_exists(self._window):
+            self._window.show_update_banner(release["version"], _do_install)
+        else:
+            import tkinter.messagebox as mb
+            version = release["version"]
+            notes   = release["notes"]
+            msg = f"Version {version} is available.\n"
+            if notes:
+                msg += f"\nWhat's new:\n{notes}\n"
+            msg += "\nInstall now? The app will restart automatically."
+            if mb.askyesno("Update available", msg, parent=self._root):
+                _do_install()
+
+    # ── Uninstall ─────────────────────────────────────────────────────────────
+
+    def _do_uninstall(self) -> None:
+        import tkinter.messagebox as mb
+        if not mb.askyesno(
+            "Uninstall",
+            "This will remove Jira Reminders from Windows Startup "
+            "and quit the app.\n\nContinue?",
+            parent=self._root,
+        ):
+            return
+
+        updater.remove_startup_shortcut()
+
+        mb.showinfo(
+            "Uninstalled",
+            "Jira Reminders has been removed from Startup.\n\n"
+            "Your saved data in %USERPROFILE%\\.jira-reminders\\ was kept.\n"
+            "Delete that folder manually if you want to remove it completely.",
+            parent=self._root,
+        )
+        if self._tray:
+            self._tray.stop()
+        self._root.quit()
+
     # ── UI queue ──────────────────────────────────────────────────────────────
 
     def _drain_ui_queue(self) -> None:
@@ -244,6 +312,10 @@ class App:
                     self._window.update_leaver_tickets(args[0])
                 elif cmd == "open_settings":
                     self._open_settings()
+                elif cmd == "update_available":
+                    self._handle_update_available(args[0])
+                elif cmd == "uninstall":
+                    self._do_uninstall()
         except queue.Empty:
             pass
         self._root.after(100, self._drain_ui_queue)
@@ -268,6 +340,9 @@ class App:
         )
         self._window.lift()
         self._window.focus_force()
+        if self._pending_update:
+            release = self._pending_update
+            self._handle_update_available(release)
 
     def _manual_refresh(self) -> None:
         threading.Thread(target=self._fetch_and_notify, daemon=True).start()
@@ -299,6 +374,23 @@ class App:
 
     def _tray_settings(self, icon=None, item=None):
         self._ui_queue.put(("open_settings",))
+
+    def _tray_check_updates(self, icon=None, item=None):
+        def _check():
+            release = updater.check_for_update()
+            if release:
+                self._ui_queue.put(("update_available", release))
+            else:
+                import tkinter.messagebox as mb
+                self._root.after(0, lambda: mb.showinfo(
+                    "Up to date",
+                    f"You're running the latest version ({updater.current_version()}).",
+                    parent=self._root,
+                ))
+        threading.Thread(target=_check, daemon=True).start()
+
+    def _tray_uninstall(self, icon=None, item=None):
+        self._ui_queue.put(("uninstall",))
 
     def _tray_quit(self, icon=None, item=None):
         if self._tray:

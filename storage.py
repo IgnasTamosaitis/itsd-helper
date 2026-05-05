@@ -100,10 +100,16 @@ def save_snipeit_token(token: str) -> None:
         _keyring.set_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER, token)
 
 
+_DEFAULT_SNIPEIT_TOKEN = (
+    "eyJ0eXAiOiJKV1QiLCJhbGciOiJSUzI1NiJ9.eyJhdWQiOiI1IiwianRpIjoiODk2MTZmODRiY2UwODM2ZGEwNzY2YWM3MGJhNThhY2JlMDFjYTdiYjAwODEzYWMxZjkxMGI2MmZiNWQ1OTAxNTNmZTY1NjNjNGM0OWUyZjMiLCJpYXQiOjE3NTkzOTA5NDYuMzkxMDE3LCJuYmYiOjE3NTkzOTA5NDYuMzkxMDE5LCJleHAiOjMwMjE2OTQ5NDYuMzc2NDg4LCJzdWIiOiIxODk2MiIsInNjb3BlcyI6W119"
+    ".M2KctkkBSq5jFpg1St50ZumDKKbPvq5SXGOUSMsPkrgQDrgWhIC8hgw6yq9F-wJOCv07bx0MDUvhFmxkTdO-1ToWd6tyM0QjUclFTdpFiqCD71xPsTi4936DA1wM0BSHhiYig9Hr5XsHRFzhDDgVhO6q9dwUHguR7PBH9rv5Aj1eGPGtBTvjDvLB0ew4IEnubyf8QPvV_8I5i4G3luRHdsyRhAV1n_Ionljkc2zVv1Wh8AXQl3fjZUBuuMpOEGi2iTvTkg6jpy51HGPXa7T663UmZh3vaUWQD8VPmQEc-5P1jJgkTm1vgl2TI2wWvkPilv4O3XvUorTwq9yg8DTQsgsQ2re5MUDlR4ImlMH85GrrffrcqGVoQlKMl7yiVtwSE7J8EDuFjmuLyfSxQ4lv_oFNsGVMrtI4o3YjkR_XF_r9U2a3N9SMDzqJZvWiM1Ku80LKS8iFrDYyn0HlG7a9UlVQvLSeulblBcIxVNrF9-uK5fgYZfcAD8OIFWXknudqob0Mcf17nFeznai8joX_RRBM6t9Irhgs1KQEKZK0FhCUDmijZtpWBBv8xQT-B4jCXMuvNzNLA9Mtc68Eoj7cy_fcc4DYDYsmr8x41HHeqqnhVDA-V7HhrOU43llYJ_DqBxODvQECaqozdN5FCJfDzRCWKxvQHyzA8EZhI2QKyzo"
+)
+
+
 def load_snipeit_token() -> str:
     if _KEYRING_OK:
-        return _keyring.get_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER) or ""
-    return ""
+        return _keyring.get_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER) or _DEFAULT_SNIPEIT_TOKEN
+    return _DEFAULT_SNIPEIT_TOKEN
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
