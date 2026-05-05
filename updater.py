@@ -108,11 +108,18 @@ def _launch_ps1(src: Path, new_version: str) -> None:
     ps1 = _STAGING_DIR / "_apply_update.ps1"
     ps1.write_text("\n".join(ps_lines), encoding="utf-8")
 
+    # VBS wrapper is required — subprocess.Popen with DETACHED_PROCESS fails
+    # silently when launched from a consoleless pythonw process.
+    ps1_escaped = str(ps1).replace('"', '""')
+    vbs = _STAGING_DIR / "_run_update.vbs"
+    vbs.write_text(
+        'Set WshShell = CreateObject("WScript.Shell")\n'
+        f'WshShell.Run "powershell -NoProfile -ExecutionPolicy Bypass'
+        f' -WindowStyle Hidden -File ""{ps1_escaped}""", 0, False\n',
+        encoding="utf-8",
+    )
     subprocess.Popen(
-        [
-            "powershell", "-NoProfile", "-ExecutionPolicy", "Bypass",
-            "-WindowStyle", "Hidden", "-File", str(ps1),
-        ],
+        ["wscript.exe", str(vbs)],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
     )
 
