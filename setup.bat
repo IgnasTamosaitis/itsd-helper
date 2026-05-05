@@ -56,6 +56,8 @@ echo  Done!
 echo  - App will start automatically on login.
 echo  - To start now: double-click start_reminders.vbs
 echo  - Look for the tray icon in the system tray.
+echo  - Updates install automatically in the background.
+echo  - To uninstall: right-click the tray icon, Uninstall.
 echo ============================================
 echo.
 pause
