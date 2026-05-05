@@ -100,16 +100,10 @@ def save_snipeit_token(token: str) -> None:
         _keyring.set_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER, token)
 
 
-_DEFAULT_SNIPEIT_TOKEN = (
-    "***REMOVED***"
-    ".***REMOVED***"
-)
-
-
 def load_snipeit_token() -> str:
     if _KEYRING_OK:
-        return _keyring.get_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER) or _DEFAULT_SNIPEIT_TOKEN
-    return _DEFAULT_SNIPEIT_TOKEN
+        return _keyring.get_password(_KEYRING_SERVICE, _SNIPEIT_KEYRING_USER) or ""
+    return ""
 
 
 # ── Config ────────────────────────────────────────────────────────────────────
