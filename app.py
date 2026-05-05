@@ -127,7 +127,7 @@ class App:
 
     _DEFAULT_LEAVER_JQL = (
         'assignee = currentUser() AND labels = leaver '
-        'AND status not in (Done, Closed, Resolved)'
+        'AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)'
     )
 
     def _fetch_leavers(self) -> None:
