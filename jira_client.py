@@ -503,6 +503,11 @@ class JiraClient:
                 "reporter_name": reporter_raw.get("displayName", ""),
             })
 
+        _EXCLUDED_STATUSES = {"declined", "cancelled", "canceled", "rejected", "withdrawn"}
+        tickets = [
+            t for t in tickets
+            if t["status"].strip().lower() not in _EXCLUDED_STATUSES
+        ]
         tickets.sort(key=lambda t: t["last_day"] or date.max)
         cutoff = date.today() - timedelta(days=1)
         return [t for t in tickets if t["last_day"] is None or t["last_day"] >= cutoff]

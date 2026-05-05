@@ -1702,7 +1702,7 @@ class SetupDialog(tk.Toplevel):
         "api_token":             "",
         "jql":                   'assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)',
         "date_field":            "customfield_10980",
-        "leaver_jql":            'assignee = currentUser() AND labels = leaver AND status not in (Done, Closed, Resolved)',
+        "leaver_jql":            'assignee = currentUser() AND labels = leaver AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)',
         "snipeit_url":           "https://inventory.girteka.eu",
         "snipeit_token":         "***REMOVED***.***REMOVED***",
         "remind_days_before":    "3",
