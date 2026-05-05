@@ -85,9 +85,11 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
 
     ps_lines = [
         "Start-Sleep -Seconds 3",
+        # Strip read-only/hidden attributes GitHub zips sometimes set
+        f"Get-ChildItem -Path {q(src)} -Recurse | ForEach-Object {{ $_.Attributes = 'Normal' }}",
         f"Get-ChildItem -Path {q(src)} -Filter '*.py' | Copy-Item -Destination {q(APP_DIR)} -Force",
         f"if (Test-Path {q(src / 'templates')}) {{",
-        f"    Copy-Item -Path {q(src / 'templates')} -Destination {q(APP_DIR / 'templates')} -Recurse -Force",
+        f"    robocopy {q(src / 'templates')} {q(APP_DIR / 'templates')} /E /IS /IT /IM >$null",
         f"}}",
         f"if (Test-Path {q(src / 'requirements.txt')}) {{",
         f"    Copy-Item -Path {q(src / 'requirements.txt')} -Destination {q(APP_DIR / 'requirements.txt')} -Force",
