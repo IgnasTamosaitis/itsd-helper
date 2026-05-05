@@ -68,40 +68,13 @@ def _force_remove(path: Path) -> None:
         )
 
 
-def download_and_apply(release: dict, progress_cb=None) -> None:
-    """Download the release zip and schedule file replacement after the app exits."""
-    _force_remove(_STAGING_DIR)
-    _STAGING_DIR.mkdir()
+def _launch_ps1(src: Path, new_version: str) -> None:
+    """Write and launch the PS1 that copies files and restarts the app."""
+    launcher = APP_DIR / "start_reminders.vbs"
+    log      = APP_DIR / "update.log"
 
-    zip_path = _STAGING_DIR / "update.zip"
-
-    if progress_cb:
-        progress_cb("Downloading…")
-    r = requests.get(release["zipball_url"], stream=True, timeout=120)
-    r.raise_for_status()
-    with open(zip_path, "wb") as f:
-        for chunk in r.iter_content(chunk_size=16384):
-            f.write(chunk)
-
-    if progress_cb:
-        progress_cb("Extracting…")
-    extract_dir = _STAGING_DIR / "extracted"
-    with zipfile.ZipFile(zip_path, "r") as zf:
-        zf.extractall(extract_dir)
-
-    top_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
-    if not top_dirs:
-        raise RuntimeError("Unexpected zip layout — no top-level directory found.")
-    src = top_dirs[0]
-
-    new_version = release["version"].lstrip("v")
-    launcher    = APP_DIR / "start_reminders.vbs"
-
-    # Single-quoted PS strings handle spaces in paths without escaping.
     def q(p: Path) -> str:
         return f"'{p}'"
-
-    log = APP_DIR / "update.log"
 
     def log_line(msg: str) -> str:
         return f"Add-Content -Path {q(log)} -Value \"$(Get-Date -Format 'yyyy-MM-dd HH:mm:ss') {msg}\""
@@ -142,6 +115,52 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
         ],
         creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
     )
+
+
+def download_and_apply(release: dict, progress_cb=None) -> None:
+    """Download the release zip and schedule file replacement after the app exits."""
+    _force_remove(_STAGING_DIR)
+    _STAGING_DIR.mkdir()
+
+    zip_path = _STAGING_DIR / "update.zip"
+
+    if progress_cb:
+        progress_cb("Downloading…")
+    r = requests.get(release["zipball_url"], stream=True, timeout=120)
+    r.raise_for_status()
+    with open(zip_path, "wb") as f:
+        for chunk in r.iter_content(chunk_size=16384):
+            f.write(chunk)
+
+    if progress_cb:
+        progress_cb("Extracting…")
+    extract_dir = _STAGING_DIR / "extracted"
+    with zipfile.ZipFile(zip_path, "r") as zf:
+        zf.extractall(extract_dir)
+
+    top_dirs = [d for d in extract_dir.iterdir() if d.is_dir()]
+    if not top_dirs:
+        raise RuntimeError("Unexpected zip layout — no top-level directory found.")
+
+    _launch_ps1(src=top_dirs[0], new_version=release["version"].lstrip("v"))
+
+
+def simulate_local_update(new_version: str = "test") -> None:
+    """Stage from the current directory and run the update PS1 — for local testing only."""
+    _force_remove(_STAGING_DIR)
+    _STAGING_DIR.mkdir()
+    src = _STAGING_DIR / "extracted" / "local-test"
+    src.mkdir(parents=True)
+
+    for f in APP_DIR.glob("*.py"):
+        shutil.copy2(f, src / f.name)
+    if (APP_DIR / "requirements.txt").exists():
+        shutil.copy2(APP_DIR / "requirements.txt", src / "requirements.txt")
+    templates_src = APP_DIR / "templates"
+    if templates_src.exists():
+        shutil.copytree(templates_src, src / "templates")
+
+    _launch_ps1(src=src, new_version=new_version)
 
 
 def remove_startup_shortcut() -> bool:
