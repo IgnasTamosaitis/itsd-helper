@@ -72,6 +72,8 @@ class App:
     # ── Startup ───────────────────────────────────────────────────────────────
 
     def run(self) -> None:
+        updater.ensure_startup_shortcut()
+        updater.ensure_desktop_shortcut()
         cfg = load_config()
         if not cfg:
             cfg = self._run_setup(None)

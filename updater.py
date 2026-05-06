@@ -170,6 +170,58 @@ def simulate_local_update(new_version: str = "test") -> None:
     _launch_ps1(src=src, new_version=new_version)
 
 
+def _write_shortcut(shortcut: Path) -> None:
+    launcher = APP_DIR / "start_reminders.vbs"
+    ps = (
+        f'$sh = New-Object -ComObject WScript.Shell; '
+        f'$sc = $sh.CreateShortcut("{shortcut}"); '
+        f'$sc.TargetPath = "C:\\\\WINDOWS\\\\system32\\\\wscript.exe"; '
+        f'$sc.Arguments = \'"{launcher}"\'; '
+        f'$sc.WorkingDirectory = "{APP_DIR}"; '
+        f'$sc.Save()'
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", ps],
+        creationflags=subprocess.CREATE_NO_WINDOW,
+    )
+
+
+def _ensure_shortcut(shortcut: Path) -> None:
+    """Create or repair a shortcut so it points to the current install location."""
+    launcher = APP_DIR / "start_reminders.vbs"
+    expected_args = f'"{launcher}"'
+    try:
+        if shortcut.exists():
+            ps_check = (
+                f'$sh = New-Object -ComObject WScript.Shell; '
+                f'$sc = $sh.CreateShortcut("{shortcut}"); '
+                f'$sc.Arguments'
+            )
+            result = subprocess.run(
+                ["powershell", "-NoProfile", "-Command", ps_check],
+                capture_output=True, text=True,
+                creationflags=subprocess.CREATE_NO_WINDOW,
+            )
+            if result.stdout.strip() == expected_args:
+                return  # already correct
+        _write_shortcut(shortcut)
+    except Exception as e:
+        print(f"[updater] ensure_shortcut({shortcut.name}) failed: {e}")
+
+
+def ensure_startup_shortcut() -> None:
+    startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
+    _ensure_shortcut(startup / "JiraReminders.lnk")
+
+
+def ensure_desktop_shortcut() -> None:
+    import ctypes.wintypes
+    buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
+    ctypes.windll.shell32.SHGetFolderPathW(0, 0x0000, 0, 0, buf)  # CSIDL_DESKTOP
+    desktop = Path(buf.value)
+    _ensure_shortcut(desktop / "Jira Reminders.lnk")
+
+
 def remove_startup_shortcut() -> bool:
     """Delete the Windows Startup shortcut. Returns True if it existed."""
     startup   = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
