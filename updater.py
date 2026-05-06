@@ -4,6 +4,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import sys
 import zipfile
 from pathlib import Path
 
@@ -72,6 +73,7 @@ def _launch_ps1(src: Path, new_version: str) -> None:
     """Write and launch the PS1 that copies files and restarts the app."""
     launcher = APP_DIR / "start_reminders.vbs"
     log      = APP_DIR / "update.log"
+    python_exe = Path(sys.executable)
 
     def q(p: Path) -> str:
         return f"'{p}'"
@@ -99,7 +101,7 @@ def _launch_ps1(src: Path, new_version: str) -> None:
         log_line("running pip install"),
         f"if (Test-Path {q(src / 'requirements.txt')}) {{",
         f"    Copy-Item -Path {q(src / 'requirements.txt')} -Destination {q(APP_DIR / 'requirements.txt')} -Force",
-        f"    & pip install -r {q(APP_DIR / 'requirements.txt')} --quiet",
+        f"    & {q(python_exe)} -m pip install -r {q(APP_DIR / 'requirements.txt')} --quiet",
         f"}}",
         log_line("cleaning up staging"),
         f"Remove-Item -Path {q(_STAGING_DIR)} -Recurse -Force -ErrorAction SilentlyContinue",

@@ -2,6 +2,34 @@
 
 ---
 
+## v1.2.1 - Windows Installer and Launcher Fixes
+
+This release fixes the packaging issues in `v1.2.0` that could prevent a fresh GitHub download from installing or launching correctly on another Windows machine.
+
+---
+
+### Installer fixes
+
+- `setup.bat` now accepts both `python` and the Windows `py -3` launcher
+- Python detection now verifies that the installed version is 3.11 or later
+- Dependency installation now uses `python -m pip` or `py -3 -m pip` instead of relying on a standalone `pip` command being on `PATH`
+
+### Launcher fixes
+
+- Fixed `start_reminders.vbs` so it no longer contains an absolute path from the release author's machine
+- The launcher now resolves `app.py` relative to its own folder, making downloaded release folders portable
+- Startup now falls back across `pyw`, `py`, `pythonw`, and `python` so the app can launch on more Windows setups
+
+### Updater fixes
+
+- The auto-updater now installs dependencies through the currently running Python interpreter instead of calling bare `pip`
+
+### Notes
+
+- If Python was installed just before running setup, reopening the terminal or Explorer window may still be necessary so the new launcher/path entries are visible
+
+---
+
 ## v1.1.0 — Leavers Workflow, Snipe-IT Integration, and UI Polish
 
 This release expands the app from a joiner-focused workflow into a full ITSD helper for both onboarding and offboarding. It adds a dedicated Leavers workspace, Jira automation support, Snipe-IT integration, document generation, and a broader UI cleanup pass.

@@ -15,3 +15,7 @@ Thumbs.db
 
 # Generated documents
 generated_docs/
+
+# Local updater output
+update.log
+_update_staging/

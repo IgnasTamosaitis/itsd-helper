@@ -6,16 +6,26 @@ echo  Jira New Joiner Reminders - Setup
 echo ============================================
 echo.
 
-:: Check Python
-python --version >nul 2>&1
-if errorlevel 1 (
-    echo ERROR: Python not found. Please install Python 3.11+ from python.org
+:: Check Python 3.11+ using either python.exe or the Windows launcher.
+set "PYTHON_CMD="
+python -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+if not errorlevel 1 set "PYTHON_CMD=python"
+
+if not defined PYTHON_CMD (
+    py -3 -c "import sys; raise SystemExit(0 if sys.version_info >= (3, 11) else 1)" >nul 2>&1
+    if not errorlevel 1 set "PYTHON_CMD=py -3"
+)
+
+if not defined PYTHON_CMD (
+    echo ERROR: Python 3.11+ was not found.
+    echo If you just installed Python, reopen this window and make sure
+    echo the Python Launcher was installed.
     pause
     exit /b 1
 )
 
 echo Installing dependencies...
-pip install -r "%~dp0requirements.txt" --quiet
+%PYTHON_CMD% -m pip install -r "%~dp0requirements.txt" --quiet
 if errorlevel 1 (
     echo ERROR: pip install failed. Check your internet connection.
     pause
@@ -25,12 +35,7 @@ if errorlevel 1 (
 echo.
 echo Creating startup shortcut in Start Menu...
 
-:: Create a VBS launcher (no console window)
 set LAUNCHER=%~dp0start_reminders.vbs
-(
-  echo Set WshShell = CreateObject^("WScript.Shell"^)
-  echo WshShell.Run "pythonw ""%~dp0app.py""", 0, False
-) > "%LAUNCHER%"
 
 :: Shortcut in Startup folder — write a PS1 then run it to avoid ^ escaping issues
 set STARTUP=%APPDATA%\Microsoft\Windows\Start Menu\Programs\Startup
