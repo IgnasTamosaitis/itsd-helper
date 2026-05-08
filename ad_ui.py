@@ -32,9 +32,51 @@ _CLIPBOARD_CLEAR_MS = 30_000   # clear clipboard 30 s after copying sensitive da
 SCENARIO_LABELS = {
     "new_joiner":      ("New joiner", GREEN),
     "rejoiner_dual":   ("Rejoiner - restore old account", ORANGE),
-    "rejoiner_single": ("Rejoiner - disabled account", ORANGE),
+    "rejoiner_single": ("Rejoiner - single existing account", ORANGE),
     "unknown":         ("Needs manual review", RED),
 }
+
+# Approval-only groups must not be copied from a buddy without a separate
+# approved request. Match by exact AD group name (case-insensitive).
+RESTRICTED_GROUP_NAMES = {
+    "Microsoft 365 Business Premium",
+    "Power BI Premium Per User license",
+    "Bitwarden Access",
+    "VISIO_Plan_2",
+    "M365 Add-In Microsoft Visio Data Visualizer",
+    "M365 Add-In Breaktime",
+    "M365 Add-In Power BI",
+    "M365 Add-in Claude by Anthropic for Excel",
+    "M365 Add-In Odoo for Outlook",
+    "M365 Add-In SAP Analytics Cloud for Office",
+    "Power BI PowerPoint Add in",
+    "Test Add new users without teams policy",
+    "Intune Managed devices (HASH manually add)",
+    "App - Users - Salesforce ClassTruck",
+    "App - Users - Salesforce Service Cloud GL PROD",
+    "App - Admins - Salesforce Sales Cloud GL UAT",
+    "App - Users - Salesforce Sales Cloud GL PROD",
+    "App - Users - Salesforce Service Cloud GL SAT",
+    "App - Admins - Salesforce Service Cloud GL SAT",
+    "App - Admins - Salesforce Service Cloud GL PROD",
+    "App - Users - Salesforce Sales Cloud GL UAT",
+    "App - Users - Salesforce Service Cloud GL UAT",
+    "App - Admins - Salesforce Sales Cloud GL SIT",
+    "App - Admins - Salesforce Service Cloud GL UAT",
+    "App - Users - Salesforce Sales Cloud GL SIT",
+    "App - Admins - Salesforce Sales Cloud GL PROD",
+    "App - Users - Salesforce Sales Cloud GL PRE-PROD",
+    "App - Admins - Salesforce Sales Cloud GL PRE-PROD",
+}
+RESTRICTED_GROUP_KEYS = {name.casefold() for name in RESTRICTED_GROUP_NAMES}
+
+# Redundant groups are intentionally blocked as well, but they are shown as
+# useless rather than approval-only.
+REDUNDANT_GROUP_NAMES = {
+    "Teams VLS access policy applied",
+    "RDS-Disabled",
+}
+REDUNDANT_GROUP_KEYS = {name.casefold() for name in REDUNDANT_GROUP_NAMES}
 
 
 class BusyDialog(tk.Toplevel):
@@ -90,6 +132,18 @@ class BusyDialog(tk.Toplevel):
             self.destroy()
         except tk.TclError:
             pass
+
+
+def is_restricted_group(group_name: str) -> bool:
+    return (group_name or "").strip().casefold() in RESTRICTED_GROUP_KEYS
+
+
+def is_redundant_group(group_name: str) -> bool:
+    return (group_name or "").strip().casefold() in REDUNDANT_GROUP_KEYS
+
+
+def is_blocked_group(group_name: str) -> bool:
+    return is_restricted_group(group_name) or is_redundant_group(group_name)
 
 
 class ADSetupWindow(tk.Toplevel):
@@ -249,8 +303,9 @@ class ADSetupWindow(tk.Toplevel):
 
         self._rejoiner_single_warning = tk.Label(
             sec2,
-            text="⚠  Rejoiner single — no SF dummy account exists. All employment data comes from the "
-                 "Jira ticket. Verify position, company, and manager are correct before applying.",
+            text="⚠  Rejoiner single — no SF dummy account exists. The single existing account may be "
+                 "disabled or already active. All employment data comes from the Jira ticket. Verify "
+                 "position, company, and manager are correct before applying.",
             bg="#FFF4E5", fg="#B76E00", font=("Segoe UI", 9, "bold"),
             wraplength=760, justify="left", anchor="w", padx=8, pady=6)
         # shown only when scenario is rejoiner_single
@@ -325,6 +380,12 @@ class ADSetupWindow(tk.Toplevel):
 
         tk.Label(sec5, text="Groups from the template user:",
                  bg=BG, fg=GRAY, font=("Segoe UI", 9)).pack(anchor="w", pady=(10, 2))
+        tk.Label(sec5,
+                 text="Approval-only license groups are shown in red and cannot be copied from the buddy.",
+                 bg=BG, fg=RED, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 2))
+        tk.Label(sec5,
+                 text="Redundant groups are shown in gray and are never copied.",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 2))
 
         self._buddy_groups_frame = tk.Frame(sec5, bg=WHITE, relief="solid", bd=1)
         self._buddy_groups_frame.pack(fill="x", pady=(0, 4))
@@ -364,6 +425,12 @@ class ADSetupWindow(tk.Toplevel):
         sec6 = self._section(body, "6. Groups to add")
 
         tk.Label(sec6, text="Default groups pre-selected. Add buddy groups above, then adjust.",
+                 bg=BG, fg=GRAY, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 4))
+        tk.Label(sec6,
+                 text="Restricted approval-only license groups stay disabled in red and are never added by this tool.",
+                 bg=BG, fg=RED, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 4))
+        tk.Label(sec6,
+                 text="Redundant groups stay disabled in gray and are never added by this tool.",
                  bg=BG, fg=GRAY, font=("Segoe UI", 8)).pack(anchor="w", pady=(0, 4))
 
         self._groups_frame = tk.Frame(sec6, bg=WHITE, relief="solid", bd=1)
@@ -572,12 +639,26 @@ class ADSetupWindow(tk.Toplevel):
                     for i, g in enumerate(groups):
                         var = tk.BooleanVar(value=False)
                         self._buddy_group_vars[g] = var
+                        restricted = is_restricted_group(g)
+                        redundant = is_redundant_group(g)
+                        blocked = restricted or redundant
+                        label = f"{g} (redundant)" if redundant else g
                         if i % 2 == 0:
                             rf = tk.Frame(self._buddy_groups_frame, bg=WHITE)
                             rf.pack(fill="x")
-                        tk.Checkbutton(rf, text=g, variable=var,
-                                       bg=WHITE, font=("Segoe UI", 9),
-                                       anchor="w").pack(side="left", padx=12, pady=1)
+                        tk.Checkbutton(
+                            rf,
+                            text=label,
+                            variable=var,
+                            bg=WHITE,
+                            fg=RED if restricted else (GRAY if redundant else TEXT),
+                            disabledforeground=RED if restricted else GRAY,
+                            font=("Segoe UI", 9),
+                            anchor="w",
+                            state="disabled" if blocked else "normal",
+                            selectcolor=WHITE,
+                            activebackground=WHITE,
+                        ).pack(side="left", padx=12, pady=1)
 
                     for w in self._ext_attr_frame.winfo_children():
                         w.destroy()
@@ -638,13 +719,16 @@ class ADSetupWindow(tk.Toplevel):
         threading.Thread(target=_do, daemon=True).start()
 
     def _buddy_select_all(self):
-        for v in self._buddy_group_vars.values(): v.set(True)
+        for g, v in self._buddy_group_vars.items():
+            if not is_blocked_group(g):
+                v.set(True)
 
     def _buddy_deselect_all(self):
         for v in self._buddy_group_vars.values(): v.set(False)
 
     def _copy_buddy_groups(self):
-        selected = [g for g, v in self._buddy_group_vars.items() if v.get()]
+        selected = [g for g, v in self._buddy_group_vars.items()
+                    if v.get() and not is_blocked_group(g)]
         if not selected:
             messagebox.showinfo("Nothing selected", "Tick some buddy groups first.", parent=self)
             return
@@ -660,17 +744,32 @@ class ADSetupWindow(tk.Toplevel):
             w.destroy()
         self._group_vars.clear()
         for i, g in enumerate(groups):
-            var = tk.BooleanVar(value=True)
+            restricted = is_restricted_group(g)
+            redundant = is_redundant_group(g)
+            blocked = restricted or redundant
+            label = f"{g} (redundant)" if redundant else g
+            var = tk.BooleanVar(value=not blocked)
             self._group_vars[g] = var
             if i % 2 == 0:
                 rf = tk.Frame(self._groups_frame, bg=WHITE)
                 rf.pack(fill="x")
-            tk.Checkbutton(rf, text=g, variable=var,
-                           bg=WHITE, font=("Segoe UI", 9),
-                           anchor="w").pack(side="left", padx=12, pady=1)
+            tk.Checkbutton(
+                rf,
+                text=label,
+                variable=var,
+                bg=WHITE,
+                fg=RED if restricted else (GRAY if redundant else TEXT),
+                disabledforeground=RED if restricted else GRAY,
+                font=("Segoe UI", 9),
+                anchor="w",
+                state="disabled" if blocked else "normal",
+                selectcolor=WHITE,
+                activebackground=WHITE,
+            ).pack(side="left", padx=12, pady=1)
 
     def _active_groups(self) -> list[str]:
-        return [g for g, v in self._group_vars.items() if v.get()]
+        return [g for g, v in self._group_vars.items()
+                if v.get() and not is_blocked_group(g)]
 
     # ── SMS ───────────────────────────────────────────────────────────────────
 

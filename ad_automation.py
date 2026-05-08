@@ -7,7 +7,7 @@ We never create accounts from scratch; we move, enable, and configure them.
 Scenarios detected by searching AD by first+last name:
   new_joiner      - one account, located in SF_OU  (just provisioned)
   rejoiner_dual   - two accounts: one in SF_OU (dummy) + one old disabled account
-  rejoiner_single - one account, NOT in SF_OU, disabled  (edge case)
+  rejoiner_single - one account, NOT in SF_OU (disabled or already active)
   unknown         - unexpected state, needs manual review
 """
 import re
@@ -32,6 +32,14 @@ def _e(s: str) -> str:
 
 def _nfc(value: str) -> str:
     return unicodedata.normalize("NFC", value or "")
+
+
+def _normalize_manager_name(value: str) -> str:
+    value = _nfc(value).strip()
+    if not value:
+        return ""
+    value = re.sub(r"^(hiring\s+manager|manager)\s*:\s*", "", value, flags=re.IGNORECASE)
+    return value.strip()
 
 
 def _manager_lookup_lines(manager: str) -> list[str]:
@@ -363,7 +371,7 @@ def classify_scenario(accounts: list[dict]) -> str:
     """
     new_joiner      - single account in SF OU
     rejoiner_dual   - SF account + separate old account
-    rejoiner_single - single disabled account NOT in SF OU
+    rejoiner_single - single account NOT in SF OU
     unknown         - anything else
     """
     if not accounts:
@@ -374,7 +382,7 @@ def classify_scenario(accounts: list[dict]) -> str:
         return "new_joiner"
     if sf and old:
         return "rejoiner_dual"
-    if len(accounts) == 1 and not accounts[0]["enabled"]:
+    if len(accounts) == 1 and old:
         return "rejoiner_single"
     return "unknown"
 
@@ -436,10 +444,13 @@ def build_verification_script(sam: str) -> str:
     """Returns a PS script that fetches and displays key attributes for verification."""
     return f"""
 Import-Module ActiveDirectory -ErrorAction Stop
-$u = Get-ADUser -Identity '{_e(sam)}' -Properties Title,Description,Department,Company,Office,EmailAddress,Manager,extensionAttribute5,extensionAttribute10,extensionAttribute14,extensionAttribute15,targetAddress,proxyAddresses,Enabled -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties Title,Description,Department,Company,Office,EmailAddress,Manager,extensionAttribute5,extensionAttribute10,extensionAttribute14,extensionAttribute15,targetAddress,proxyAddresses,Enabled,LockedOut,PasswordLastSet,UserPrincipalName -ErrorAction Stop
 $mgrName = if ($u.Manager) {{ $u.Manager -replace '^CN=([^,]+),.+$','$1' }} else {{ '' }}
 Write-Host "=== Verification: $($u.SamAccountName) ==="
 Write-Host "Enabled:              $($u.Enabled)"
+Write-Host "Locked out:           $($u.LockedOut)"
+Write-Host "PasswordLastSet:      $($u.PasswordLastSet)"
+Write-Host "UserPrincipalName:    $($u.UserPrincipalName)"
 Write-Host "Title:                $($u.Title)"
 Write-Host "Description:          $($u.Description)"
 Write-Host "Department:           $($u.Department)"
@@ -470,6 +481,35 @@ def build_ext_attr_lines(sam: str, ext_attrs: dict) -> list[str]:
         "",
     ]
 
+
+def _password_reset_lines(sam: str, password: str) -> list[str]:
+    sam_e = _e(sam)
+    pwd_e = _e(password)
+    return [
+        "# Reset password, unlock the account if needed, and validate on the same DC",
+        f"$plainPassword = '{pwd_e}'",
+        "$securePassword = ConvertTo-SecureString $plainPassword -AsPlainText -Force",
+        f"Set-ADAccountPassword -Identity '{sam_e}' -Reset -NewPassword $securePassword",
+        f"$postReset = Get-ADUser -Identity '{sam_e}' -Properties LockedOut,PasswordLastSet",
+        "if ($postReset.LockedOut) {",
+        f"    Unlock-ADAccount -Identity '{sam_e}'",
+        '    Write-Host "OK  Account unlocked"',
+        "} else {",
+        '    Write-Host "OK  Account already unlocked"',
+        "}",
+        f"Set-ADUser -Identity '{sam_e}' -ChangePasswordAtLogon $false",
+        "Add-Type -AssemblyName System.DirectoryServices.AccountManagement",
+        "$ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(",
+        "    [System.DirectoryServices.AccountManagement.ContextType]::Domain, $dc)",
+        f"$passwordValid = $ctx.ValidateCredentials('{sam_e}', $plainPassword)",
+        "if (-not $passwordValid) {",
+        '    throw \"Password validation failed on $dc after reset.\"',
+        "}",
+        'Write-Host "OK  Password reset and validated"',
+        'Write-Host "PasswordLastSet: $($postReset.PasswordLastSet)"',
+        "",
+    ]
+
 # ── Script builders ───────────────────────────────────────────────────────────
 
 def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
@@ -486,10 +526,12 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
-        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred}",
-        "",
         '$ErrorActionPreference = "Stop"',
         "Import-Module ActiveDirectory -ErrorAction Stop",
+        "$dc = [string](Get-ADDomainController -Discover -Writable | Select-Object -ExpandProperty HostName)",
+        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred; '*-AD*:Server' = $dc}",
+        'Write-Host "Using DC: $dc"',
+        "",
         f'Write-Host "Processing NEW JOINER: {sf_account["username"]}"',
         "",
         "# Resolve manager email from SF account's Manager DN (SF already set this correctly)",
@@ -518,14 +560,7 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
-    L += [
-        "# Reset password",
-        f"Set-ADAccountPassword -Identity '{username}' -Reset `",
-        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
-        f"Set-ADUser -Identity '{username}' -ChangePasswordAtLogon $false",
-        'Write-Host "OK  Password reset"',
-        "",
-    ]
+    L += _password_reset_lines(sf_account["username"], password)
 
     L += _proxy_address_lines(username, email)
 
@@ -585,10 +620,12 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
-        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred}",
-        "",
         '$ErrorActionPreference = "Stop"',
         "Import-Module ActiveDirectory -ErrorAction Stop",
+        "$dc = [string](Get-ADDomainController -Discover -Writable | Select-Object -ExpandProperty HostName)",
+        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred; '*-AD*:Server' = $dc}",
+        'Write-Host "Using DC: $dc"',
+        "",
         f'Write-Host "Processing REJOINER (dual account): restoring {old_account["username"]}"',
         "",
         "# Read all new employment data from SF dummy",
@@ -630,14 +667,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
-    L += [
-        "# Reset password",
-        f"Set-ADAccountPassword -Identity '{old_sam}' -Reset `",
-        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
-        f"Set-ADUser -Identity '{old_sam}' -ChangePasswordAtLogon $false",
-        'Write-Host "OK  Password reset"',
-        "",
-    ]
+    L += _password_reset_lines(old_account["username"], password)
 
     L += _proxy_address_lines(old_sam, email)
 
@@ -715,11 +745,11 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
                                   email: str, password: str, groups: list[str],
                                   department: str = "", ext_attrs: dict = None) -> str:
     """
-    Rejoiner with only one disabled account (no SF duplicate).
-    Steps: move -> enable -> clear hide flag -> groups -> attributes -> password.
+    Rejoiner with only one account (no SF duplicate).
+    Steps: move if needed -> enable if needed -> clear hide flag -> groups -> attributes -> password.
     """
     sam     = _e(account["username"])
-    manager = _e(ticket.get("manager", ""))
+    manager = _e(_normalize_manager_name(ticket.get("manager", "")))
     title   = _e(ticket.get("position", ""))
     office  = _e(ticket.get("office", ""))
     company = ticket.get("company_name", "")
@@ -727,10 +757,12 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
-        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred}",
-        "",
         '$ErrorActionPreference = "Stop"',
         "Import-Module ActiveDirectory -ErrorAction Stop",
+        "$dc = [string](Get-ADDomainController -Discover -Writable | Select-Object -ExpandProperty HostName)",
+        "$PSDefaultParameterValues = @{'*-AD*:Credential' = $cred; '*-AD*:Server' = $dc}",
+        'Write-Host "Using DC: $dc"',
+        "",
         f'Write-Host "Processing REJOINER (single account): {account["username"]}"',
         "",
     ]
@@ -738,11 +770,20 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
     L += _manager_lookup_lines(manager)
 
     L += [
-        f"$acctDN = (Get-ADUser -Identity '{sam}' -Properties DistinguishedName).DistinguishedName",
-        f"Move-ADObject -Identity $acctDN -TargetPath '{_e(target_ou)}'",
-        'Write-Host "OK  Moved to correct OU"',
-        f"Enable-ADAccount -Identity '{sam}'",
-        'Write-Host "OK  Account enabled"',
+        f"$acct = Get-ADUser -Identity '{sam}' -Properties DistinguishedName,Enabled",
+        "$currentOu = $acct.DistinguishedName -replace '^CN=[^,]+,', ''",
+        f"if ($currentOu -ne '{_e(target_ou)}') {{",
+        f"    Move-ADObject -Identity $acct.DistinguishedName -TargetPath '{_e(target_ou)}'",
+        '    Write-Host "OK  Moved to correct OU"',
+        "} else {",
+        '    Write-Host "OK  Already in correct OU"',
+        "}",
+        "if (-not $acct.Enabled) {",
+        f"    Enable-ADAccount -Identity '{sam}'",
+        '    Write-Host "OK  Account enabled"',
+        "} else {",
+        '    Write-Host "OK  Account already enabled"',
+        "}",
         f"Set-ADUser -Identity '{sam}' -Clear msExchHideFromAddressLists",
         'Write-Host "OK  msExchHideFromAddressLists cleared"',
         "",
@@ -755,14 +796,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
         )
     L += ['Write-Host "OK  Groups assigned"', ""]
 
-    L += [
-        "# Reset password",
-        f"Set-ADAccountPassword -Identity '{sam}' -Reset `",
-        f"    -NewPassword (ConvertTo-SecureString '{_e(password)}' -AsPlainText -Force)",
-        f"Set-ADUser -Identity '{sam}' -ChangePasswordAtLogon $false",
-        'Write-Host "OK  Password reset"',
-        "",
-    ]
+    L += _password_reset_lines(account["username"], password)
 
     L += _proxy_address_lines(sam, email)
     L += _set_user_attribute_lines(sam, email, title, office, manager, _e(company), address, department)

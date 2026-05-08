@@ -92,8 +92,8 @@ def _fill_asset_table(table, assets: list[dict]) -> None:
             cells[1].text = _asset_name(asset)
             cells[2].text = _manufacturer_model(asset)
             cells[3].text = (asset.get("asset_tag") or asset.get("serial") or "").strip()
-            cells[4].text = ""
-            cells[5].text = ""
+            cells[4].text = "+"
+            cells[5].text = "Def. nėra"
         else:
             for cell in cells:
                 cell.text = ""

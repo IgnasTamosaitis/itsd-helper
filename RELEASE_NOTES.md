@@ -2,6 +2,41 @@
 
 ---
 
+## v1.2.2 - AD Setup Safeguards and Leaver Cleanup
+
+This release improves repeatable AD onboarding work, adds stronger safeguards around group assignment, and cleans up the leaver workflow and return-act output.
+
+---
+
+### AD Setup improvements
+
+- The **AD Setup** button now stays available after a completed run so the same ticket can be reopened and rerun when needed
+- **Rejoiner (single)** now supports a single existing non-SF account whether it is disabled or already active
+- The rejoiner-single flow now skips OU move and enable steps when they are already satisfied instead of falling into manual-review state
+- Jira manager values such as `Hiring Manager: ...` are normalized before AD lookup
+
+### Password reset hardening
+
+- Password resets are now pinned to one writable domain controller for the full run
+- The script now unlocks the account when needed after resetting the password
+- The new password is validated immediately after reset before the run reports success
+- Verification output now includes `LockedOut`, `PasswordLastSet`, and `UserPrincipalName`
+
+### Group-copy safeguards
+
+- Buddy-group copying now blocks a curated list of approval-only groups by exact name
+- Blocked approval-only groups are shown in **red** and cannot be selected or added
+- Redundant groups such as `Teams VLS access policy applied` and `RDS-Disabled` are shown in **gray**, labeled as redundant, and are never added
+- Group blocking is enforced both in the UI and when building the final AD script input
+
+### Leavers updates
+
+- Closed, resolved, completed, declined, cancelled, rejected, withdrawn, and past-date leaver tickets no longer remain visible in the leaver list
+- The leaver detail pane now resets cleanly if the selected ticket disappears after refresh
+- Generated return acts now fill asset-table defaults with `+` under **Būklė** and `Def. nėra` under **Pastebėti defektai**
+
+---
+
 ## v1.2.1 - Windows Installer and Launcher Fixes
 
 This release fixes the packaging issues in `v1.2.0` that could prevent a fresh GitHub download from installing or launching correctly on another Windows machine.

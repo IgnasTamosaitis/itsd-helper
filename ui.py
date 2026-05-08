@@ -319,6 +319,19 @@ class MainWindow(tk.Toplevel):
             return
         self._leaver_listbox.delete(0, "end")
         today = date.today()
+        visible_tickets = []
+        hidden_statuses = {"done", "closed", "resolved", "completed",
+                           "declined", "cancelled", "canceled", "rejected", "withdrawn"}
+        for t in self.leaver_tickets:
+            status = str(t.get("status", "")).strip().lower()
+            last_day = t.get("last_day")
+            if status in hidden_statuses:
+                continue
+            if last_day and last_day < today:
+                continue
+            visible_tickets.append(t)
+        self.leaver_tickets = visible_tickets
+
         for i, t in enumerate(self.leaver_tickets):
             ld    = t.get("last_day")
             color = TEXT
@@ -817,9 +830,17 @@ class MainWindow(tk.Toplevel):
     def update_leaver_tickets(self, tickets: list):
         self.leaver_tickets = tickets
         self._refresh_leavers_list()
-        self._leavers_status.set(f"Loaded {len(tickets)} leaver ticket(s).")
-        if self._leaver_sel is not None and self._leaver_sel < len(tickets):
-            self._show_leaver_detail(tickets[self._leaver_sel])
+        self._leavers_status.set(f"Loaded {len(self.leaver_tickets)} leaver ticket(s).")
+        if self._leaver_sel is not None and self._leaver_sel < len(self.leaver_tickets):
+            self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
+        else:
+            self._leaver_sel = None
+            if self._leaver_hint:
+                self._leaver_hint.place(relx=0.5, rely=0.5, anchor="center")
+            if self._leaver_detail_canvas:
+                self._leaver_detail_canvas.place_forget()
+            if self._leaver_detail_sb:
+                self._leaver_detail_sb.place_forget()
         self._update_leaver_open_btn()
 
     # ── Ticket list ───────────────────────────────────────────────────────────
@@ -1525,11 +1546,6 @@ class MainWindow(tk.Toplevel):
         if self._sel is None or self._sel >= len(self.tickets):
             return
         ticket = self.tickets[self._sel]
-        if self.storage.ad_setup_done(ticket["id"]):
-            messagebox.showinfo("AD setup already completed",
-                                "AD setup is already marked as completed for this joiner.",
-                                parent=self)
-            return
         from ad_ui import ADSetupWindow
         buddy_info = self._buddy_hint.get(ticket["id"])
         buddy_name = buddy_info["name"] if buddy_info and not buddy_info.get("multiple") else ""
@@ -1609,12 +1625,7 @@ class MainWindow(tk.Toplevel):
         if self._sel is None or self._sel >= len(self.tickets):
             self._ad_btn.config(state="disabled", text="AD Setup", bg="#DDE3EA", fg=GRAY)
             return
-
-        ticket = self.tickets[self._sel]
-        if self.storage.ad_setup_done(ticket["id"]):
-            self._ad_btn.config(state="disabled", text="AD done", bg="#DDE3EA", fg=GRAY)
-        else:
-            self._ad_btn.config(state="normal", text="AD Setup", bg="#00875A", fg=WHITE)
+        self._ad_btn.config(state="normal", text="AD Setup", bg="#00875A", fg=WHITE)
 
     def _ad_setup_completed(self, ticket: dict):
         self.storage.set(ticket["id"], AD_TASK_INDEX, True, len(TASKS))
