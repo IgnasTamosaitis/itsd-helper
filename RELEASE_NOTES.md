@@ -2,7 +2,7 @@
 
 ---
 
-## v1.2.3 - AD Setup Safeguards and Leaver Cleanup
+## v1.2.2 - AD Setup Safeguards and Leaver Cleanup
 
 This release improves repeatable AD onboarding work, adds stronger safeguards around group assignment, and cleans up the leaver workflow and return-act output.
 
