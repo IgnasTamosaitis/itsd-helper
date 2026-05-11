@@ -46,6 +46,11 @@ def _replace_paragraph_text(paragraph, text: str) -> None:
         paragraph.add_run(text)
 
 
+def _delete_paragraph(paragraph) -> None:
+    element = paragraph._element
+    element.getparent().remove(element)
+
+
 def _asset_name(asset: dict) -> str:
     return (
         (asset.get("category") or {}).get("name")
@@ -131,7 +136,6 @@ def generate_leaver_return_document(ticket: dict, snipeit=None) -> tuple[Path, l
         or ticket.get("company")
         or ""
     )
-    employee_contact = ticket.get("email") or snipe_user.get("email") or ""
     receiver_name = ticket.get("assignee_name") or ""
     document_date = _format_date(today)
     return_date = _format_date(ticket.get("last_day") or today)
@@ -156,20 +160,11 @@ def generate_leaver_return_document(ticket: dict, snipeit=None) -> tuple[Path, l
         f"Pareigos: {_RECEIVER_ROLE}",
     )
     _replace_paragraph_text(
-        doc.paragraphs[10],
-        f"Jira ticket: {ticket.get('key', '')}",
-    )
-    _replace_paragraph_text(
         doc.paragraphs[16],
         "Darbuotojas (grąžinantis įrangą):\n"
         "Parašas: ____________________________\n"
         f"Vardas, pavardė: {ticket.get('name', '')}\n"
         f"Data: {return_date}",
-    )
-    _replace_paragraph_text(
-        doc.paragraphs[17],
-        "Kontaktai, kuriais pageidauju gauti dokumentus: "
-        f"{employee_contact}",
     )
     _replace_paragraph_text(
         doc.paragraphs[18],
@@ -178,6 +173,9 @@ def generate_leaver_return_document(ticket: dict, snipeit=None) -> tuple[Path, l
         f"Vardas, pavardė: {receiver_name}\n"
         f"Data: {document_date}",
     )
+
+    _delete_paragraph(doc.paragraphs[17])
+    _delete_paragraph(doc.paragraphs[10])
 
     _fill_asset_table(doc.tables[0], assets)
 

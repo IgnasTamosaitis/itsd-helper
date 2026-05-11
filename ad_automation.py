@@ -418,8 +418,7 @@ foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
             ext_attrs["extensionAttribute15"] = line[5:].strip()
         elif line.startswith("GRP:"):
             g = line[4:].strip()
-            if "/O=" not in g:
-                groups.append(g)
+            groups.append(g)
     return ou, sorted(groups), "", department, ext_attrs
 
 def get_account_groups(sam: str) -> tuple[list[str], str]:
@@ -435,8 +434,7 @@ foreach ($g in $u.MemberOf) {{ "GRP:$((Get-ADGroup $g).Name)" }}
     for line in out.splitlines():
         if line.startswith("GRP:"):
             g = line[4:].strip()
-            if "/O=" not in g:
-                groups.append(g)
+            groups.append(g)
     return sorted(groups), ""
 
 
