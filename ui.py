@@ -8,6 +8,7 @@ import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
 from leaver_document import generate_leaver_return_document
+from ad_automation import find_user_accounts, classify_scenario
 
 TASKS = [
     "Active Directory account setup",
@@ -54,6 +55,7 @@ class MainWindow(tk.Toplevel):
         self._buddy_box_ticket: str | None = None
         self._manual_buddies: set = set()        # ticket_ids with a persisted manual buddy
         self._dismissed_buddy_names: dict = {}   # ticket_id -> display name of cleared buddy
+        self._ad_joiner_checks: set = set()      # ticket_ids with in-flight AD joiner-type checks
         self._load_manual_buddies()
         self._load_dismissed_buddies()
 
@@ -890,11 +892,73 @@ class MainWindow(tk.Toplevel):
         self._show_detail(self.tickets[self._sel])
         self._update_ad_button()
 
+    def _joiner_type(self, ticket: dict) -> str:
+        """Return new_joiner/rejoiner/checking for the header badge."""
+        if ticket.get("rejoiner", "").strip().casefold() == "yes":
+            return "rejoiner"
+        setup_scenario = self.storage.get_ad_setup(ticket.get("id", "")).get("scenario", "")
+        if setup_scenario == "new_joiner":
+            return "new_joiner"
+        if setup_scenario in ("rejoiner_dual", "rejoiner_single"):
+            return "rejoiner"
+        scenario = ticket.get("ad_joiner_scenario", "")
+        if scenario in ("rejoiner_dual", "rejoiner_single"):
+            return "rejoiner"
+        if scenario == "checking":
+            return "checking"
+        return "new_joiner"
+
+    def _ensure_ad_joiner_type_check(self, ticket: dict):
+        """Use AD as the source of truth when Jira says the person is not a rejoiner."""
+        ticket_id = ticket.get("id", "")
+        if not ticket_id:
+            return
+        if ticket.get("rejoiner", "").strip().casefold() == "yes":
+            return
+        setup_scenario = self.storage.get_ad_setup(ticket_id).get("scenario", "")
+        if setup_scenario:
+            ticket["ad_joiner_scenario"] = setup_scenario
+            return
+        if ticket.get("ad_joiner_scenario"):
+            return
+        first = ticket.get("first_name", "")
+        last = ticket.get("last_name", "")
+        if not first or not last:
+            return
+        if ticket_id in self._ad_joiner_checks:
+            return
+
+        self._ad_joiner_checks.add(ticket_id)
+        ticket["ad_joiner_scenario"] = "checking"
+
+        def _do():
+            try:
+                accounts = find_user_accounts(first, last)
+                scenario = classify_scenario(accounts)
+            except Exception:
+                scenario = "ad_check_failed"
+
+            def _apply():
+                self._ad_joiner_checks.discard(ticket_id)
+                for current in self.tickets:
+                    if current.get("id") == ticket_id:
+                        current["ad_joiner_scenario"] = scenario
+                        break
+                self._refresh_list()
+                if (self._sel is not None and self._sel < len(self.tickets)
+                        and self.tickets[self._sel].get("id") == ticket_id):
+                    self._show_detail(self.tickets[self._sel])
+
+            self.after(0, _apply)
+
+        threading.Thread(target=_do, daemon=True).start()
+
     # ── Detail / task panel ───────────────────────────────────────────────────
 
     def _show_detail(self, t: dict):
         self._save_current_notes()
         self._sync_ad_task(t["id"])
+        self._ensure_ad_joiner_type_check(t)
         self._hint.place_forget()
         for w in self._detail.winfo_children():
             w.destroy()
@@ -906,14 +970,20 @@ class MainWindow(tk.Toplevel):
         self._detail_canvas.yview_moveto(0.0)
 
         # Name heading + joiner type badge
-        is_rejoiner = t.get("rejoiner", "").lower() == "yes"
+        joiner_type = self._joiner_type(t)
+        is_rejoiner = joiner_type == "rejoiner"
         name_row = tk.Frame(self._detail, bg=BG)
         name_row.pack(anchor="w", padx=24, pady=(20, 2))
         tk.Label(name_row, text=t["name"], bg=BG, fg=TEXT,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
-        badge_text = "Rejoiner" if is_rejoiner else "New Joiner"
-        badge_bg   = "#FF991F" if is_rejoiner else "#E3FCEF"
-        badge_fg   = WHITE     if is_rejoiner else GREEN
+        if joiner_type == "checking":
+            badge_text = "Checking AD..."
+            badge_bg = SOFT_BLUE
+            badge_fg = ACCENT
+        else:
+            badge_text = "Rejoiner" if is_rejoiner else "New Joiner"
+            badge_bg   = "#FF991F" if is_rejoiner else "#E3FCEF"
+            badge_fg   = WHITE     if is_rejoiner else GREEN
         tk.Label(name_row, text=badge_text, bg=badge_bg, fg=badge_fg,
                  font=("Segoe UI", 9, "bold"), padx=8, pady=3,
                  relief="flat").pack(side="left", padx=(12, 0))
@@ -1629,6 +1699,9 @@ class MainWindow(tk.Toplevel):
 
     def _ad_setup_completed(self, ticket: dict):
         self.storage.set(ticket["id"], AD_TASK_INDEX, True, len(TASKS))
+        setup_scenario = self.storage.get_ad_setup(ticket["id"]).get("scenario", "")
+        if setup_scenario:
+            ticket["ad_joiner_scenario"] = setup_scenario
         self._refresh_list()
         if self._sel is not None and self._sel < len(self.tickets):
             self._listbox.selection_set(self._sel)

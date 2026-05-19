@@ -285,6 +285,70 @@ def is_buddy_disabled(sam: str) -> bool:
 
 # ── AD queries ────────────────────────────────────────────────────────────────
 
+def _without_diacritics(value: str) -> str:
+    return "".join(
+        ch for ch in unicodedata.normalize("NFKD", value or "")
+        if not unicodedata.combining(ch)
+    )
+
+
+def _unique_values(*values: str) -> list[str]:
+    results: list[str] = []
+    seen: set[str] = set()
+    for value in values:
+        value = _nfc(value).strip()
+        if not value:
+            continue
+        key = value.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        results.append(value)
+    return results
+
+
+def _ps_eq_any(prop: str, values: list[str]) -> str:
+    if not values:
+        return "$false"
+    return "(" + " -or ".join(f"{prop} -eq '{_e(v)}'" for v in values) + ")"
+
+
+def _ps_like_any(prop: str, values: list[str]) -> str:
+    if not values:
+        return "$false"
+    return "(" + " -or ".join(f"{prop} -like '{_e(v)}'" for v in values) + ")"
+
+
+def _parse_account_search_output(out: str) -> list[dict]:
+    results = []
+    seen: set[str] = set()
+    for line in out.splitlines():
+        line = line.strip()
+        if not line or "|" not in line:
+            continue
+        parts = line.split("|", 4)
+        if len(parts) < 4:
+            continue
+        username = parts[0].strip()
+        key = username.casefold()
+        if key in seen:
+            continue
+        seen.add(key)
+        dn = parts[3].strip()
+        enabled = parts[1].strip() == "True"
+        results.append({
+            "username":    username,
+            "enabled":     enabled,
+            "disabled":    (not enabled) or DISABLED_OU_FRAGMENT.lower() in dn.lower(),
+            "title":       parts[2].strip(),
+            "dn":          dn,
+            "ou":          re.sub(r"^CN=[^,]+,", "", dn),
+            "is_sf":       SF_OU_FRAGMENT in dn,
+            "employee_id": parts[4].strip() if len(parts) > 4 else "",
+        })
+    return results
+
+
 def find_user_accounts(first: str, last: str) -> list[dict]:
     """
     Search AD by first+last name. Returns all matching accounts with metadata.
@@ -292,9 +356,36 @@ def find_user_accounts(first: str, last: str) -> list[dict]:
     """
     first = _nfc(first)
     last = _nfc(last)
+    first_values = _unique_values(first, _ascii(first), _without_diacritics(first))
+    last_values = _unique_values(last, _ascii(last), _without_diacritics(last))
+    display_values = _unique_values(
+        f"{first} {last}",
+        f"{_ascii(first)} {_ascii(last)}",
+        f"{_without_diacritics(first)} {_without_diacritics(last)}",
+        f"{last} {first}",
+        f"{_ascii(last)} {_ascii(first)}",
+        f"{_without_diacritics(last)} {_without_diacritics(first)}",
+    )
+    display_patterns = _unique_values(*[
+        pattern
+        for first_value in first_values
+        for last_value in last_values
+        for pattern in (
+            f"{first_value}*{last_value}*",
+            f"{last_value}*{first_value}*",
+        )
+    ])
+    first_clause = _ps_eq_any("GivenName", first_values)
+    last_clause = _ps_eq_any("Surname", last_values)
+    first_prefix_clause = _ps_like_any("GivenName", [f"{v}*" for v in first_values])
+    last_prefix_clause = _ps_like_any("Surname", [f"{v}*" for v in last_values])
+    display_clause = _ps_eq_any("Name", display_values)
+    display_name_clause = _ps_eq_any("DisplayName", display_values)
+    display_like_clause = _ps_like_any("Name", display_patterns)
+    display_name_like_clause = _ps_like_any("DisplayName", display_patterns)
     out, err, code = run_ps(f"""
 Import-Module ActiveDirectory -ErrorAction Stop
-$users = Get-ADUser -Filter {{GivenName -eq '{_e(first)}' -and Surname -eq '{_e(last)}'}} `
+$users = Get-ADUser -Filter {{({first_clause} -and {last_clause}) -or ({first_prefix_clause} -and {last_prefix_clause}) -or {display_clause} -or {display_name_clause} -or {display_like_clause} -or {display_name_like_clause}}} `
     -Properties SamAccountName, Enabled, Title, DistinguishedName, EmployeeID
 foreach ($u in $users) {{
     $emp = if ($u.EmployeeID) {{ $u.EmployeeID }} else {{ '' }}
@@ -303,25 +394,7 @@ foreach ($u in $users) {{
 """)
     if code != 0 or not out:
         return []
-    results = []
-    for line in out.splitlines():
-        line = line.strip()
-        if not line or "|" not in line:
-            continue
-        parts = line.split("|", 4)
-        if len(parts) < 4:
-            continue
-        dn = parts[3].strip()
-        results.append({
-            "username":    parts[0].strip(),
-            "enabled":     parts[1].strip() == "True",
-            "title":       parts[2].strip(),
-            "dn":          dn,
-            "ou":          re.sub(r"^CN=[^,]+,", "", dn),
-            "is_sf":       SF_OU_FRAGMENT in dn,
-            "employee_id": parts[4].strip() if len(parts) > 4 else "",
-        })
-    return results
+    return _parse_account_search_output(out)
 
 
 def find_user_accounts_by_name(name: str) -> list[dict]:
@@ -340,24 +413,7 @@ foreach ($u in $users) {{
 }}
 """)
     if code == 0 and out:
-        results = []
-        for line in out.splitlines():
-            line = line.strip()
-            if not line or "|" not in line:
-                continue
-            parts = line.split("|", 4)
-            if len(parts) < 4:
-                continue
-            dn = parts[3].strip()
-            results.append({
-                "username":    parts[0].strip(),
-                "enabled":     parts[1].strip() == "True",
-                "title":       parts[2].strip(),
-                "dn":          dn,
-                "ou":          re.sub(r"^CN=[^,]+,", "", dn),
-                "is_sf":       SF_OU_FRAGMENT in dn,
-                "employee_id": parts[4].strip() if len(parts) > 4 else "",
-            })
+        results = _parse_account_search_output(out)
         if results:
             return results
 
@@ -378,12 +434,17 @@ def classify_scenario(accounts: list[dict]) -> str:
         return "unknown"
     sf  = [a for a in accounts if a["is_sf"]]
     old = [a for a in accounts if not a["is_sf"]]
+    disabled_old = [a for a in old if a.get("disabled") or not a.get("enabled")]
     if len(accounts) == 1 and sf:
         return "new_joiner"
+    if sf and disabled_old:
+        return "rejoiner_dual"
     if sf and old:
         return "rejoiner_dual"
-    if len(accounts) == 1 and old:
+    if disabled_old:
         return "rejoiner_single"
+    if len(accounts) == 1 and old:
+        return "new_joiner"
     return "unknown"
 
 

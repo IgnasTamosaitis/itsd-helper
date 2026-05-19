@@ -538,7 +538,7 @@ class ADSetupWindow(tk.Toplevel):
         else:
             lines = []
             for a in accounts:
-                status = "ACTIVE" if a["enabled"] else "DISABLED"
+                status = "DISABLED" if a.get("disabled") else "ACTIVE"
                 sf_tag = "  temporary SF account" if a["is_sf"] else ""
                 emp    = f"  employee ID: {a['employee_id']}" if a["employee_id"] else ""
                 lines.append(f"[{status}]  {a['username']}{sf_tag}{emp}")
@@ -548,7 +548,10 @@ class ADSetupWindow(tk.Toplevel):
 
         # Pre-fill username based on scenario
         sf_accounts  = [a for a in accounts if a["is_sf"]]
-        old_accounts = [a for a in accounts if not a["is_sf"]]
+        old_accounts = sorted(
+            [a for a in accounts if not a["is_sf"]],
+            key=lambda a: (not bool(a.get("disabled")), a.get("username", "").casefold()),
+        )
 
         self._sf_account  = sf_accounts[0]  if sf_accounts  else {}
         self._old_accounts = old_accounts
@@ -566,7 +569,12 @@ class ADSetupWindow(tk.Toplevel):
             self._sf_label.config(
                 text=f"Temporary SF account to remove later: {self._sf_account.get('username', '')}  "
                      f"employee ID: {self._sf_account.get('employee_id', 'N/A')}")
-        elif scenario in ("rejoiner_single", "unknown"):
+        elif scenario == "rejoiner_single":
+            if len(old_accounts) > 1:
+                self._show_old_account_picker(old_accounts)
+            self._username_var.set(self._old_account.get("username", "") or (accounts[0]["username"] if accounts else ""))
+            self._sf_label.config(text="")
+        elif scenario == "unknown":
             self._username_var.set(accounts[0]["username"] if accounts else "")
             self._sf_label.config(text="")
 
@@ -616,7 +624,7 @@ class ADSetupWindow(tk.Toplevel):
                 if self._scenario in ("rejoiner_dual", "rejoiner_single") and not err:
                     old_sam = (self._old_account.get("username")
                                if self._scenario == "rejoiner_dual"
-                               else (self._accounts[0].get("username") if self._accounts else ""))
+                               else self._old_account.get("username"))
                     if old_sam:
                         old_groups, _ = get_account_groups(old_sam)
                         buddy_set = set(groups)
@@ -819,10 +827,11 @@ class ADSetupWindow(tk.Toplevel):
             return build_rejoiner_dual_script(
                 self.ticket, self._sf_account, self._old_account, ou, email, password, groups, dept, ext_attrs)
         elif self._scenario == "rejoiner_single":
-            if not self._accounts:
+            account = self._old_account or (self._accounts[0] if self._accounts else {})
+            if not account:
                 raise ValueError("No AD account is available for this rejoiner.")
             return build_rejoiner_single_script(
-                self.ticket, self._accounts[0], ou, email, password, groups, dept, ext_attrs)
+                self.ticket, account, ou, email, password, groups, dept, ext_attrs)
         else:
             raise ValueError(f"Scenario '{self._scenario}' requires manual review before changes can be prepared.")
 
