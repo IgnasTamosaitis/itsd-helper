@@ -13,8 +13,9 @@ from ad_automation import find_user_accounts, classify_scenario
 TASKS = [
     "Active Directory account setup",
     "Axapta account import/creation",
-    "Hardware preparation (laptop, phone, SIM card activation, headphones)",
+    "Hardware preparation (laptop, phone, headphones)",
     "Assign hardware & licenses in Snipe-IT",
+    "SIM card activation and assignment",
     "Physical access card creation",
 ]
 AD_TASK_INDEX = 0
@@ -31,6 +32,7 @@ SOFT_BLUE = "#E9F2FF"
 INPUT_BORDER = "#C7D1DB"
 INPUT_BG = "#FFFFFF"
 ACTION_BTN_WIDTH = 20
+PRIORITY_COMPANY_COLOR = RED
 
 
 class MainWindow(tk.Toplevel):
@@ -357,7 +359,9 @@ class MainWindow(tk.Toplevel):
             else:
                 date_tag = "no date"
 
-            label = f"  {t['key']}  {t['name']}  [{date_tag}]"
+            summary = (t.get("summary") or "").strip()
+            summary_tag = f"  {summary}  |" if summary else ""
+            label = f"  {t['key']}{summary_tag}  {t['name']}  [{date_tag}]"
             self._leaver_listbox.insert("end", label)
             self._leaver_listbox.itemconfig(i, fg=color)
 
@@ -394,6 +398,11 @@ class MainWindow(tk.Toplevel):
         tk.Label(name_row, text="Leaver", bg=RED, fg=WHITE,
                  font=("Segoe UI", 9, "bold"), padx=8, pady=3,
                  relief="flat").pack(side="left", padx=(12, 0))
+
+        if t.get("summary"):
+            tk.Label(self._leaver_detail, text=t["summary"], bg=BG, fg=GRAY,
+                     font=("Segoe UI", 9), wraplength=520, justify="left").pack(
+                         anchor="w", padx=24, pady=(0, 6))
 
         # Last day date
         today = date.today()
@@ -875,8 +884,11 @@ class MainWindow(tk.Toplevel):
                 date_tag = "no date"
 
             ad_tag = "  AD done" if self.storage.ad_setup_done(t["id"]) else ""
-            label = f"  {t['key']}  {t['name']}  [{done}/{len(TASKS)}]  {date_tag}{ad_tag}"
+            company_tag = self._company_title_suffix(t) if self._is_priority_company(t) else ""
+            label = f"  {t['key']}  {t['name']}{company_tag}  [{done}/{len(TASKS)}]  {date_tag}{ad_tag}"
             self._listbox.insert("end", label)
+            if self._is_priority_company(t):
+                color = PRIORITY_COMPANY_COLOR
             self._listbox.itemconfig(i, fg=color)
 
         if not self.tickets:
@@ -955,6 +967,15 @@ class MainWindow(tk.Toplevel):
 
     # ── Detail / task panel ───────────────────────────────────────────────────
 
+    @staticmethod
+    def _is_priority_company(ticket: dict) -> bool:
+        return "willgrow" in (ticket.get("company_name") or "").casefold()
+
+    @staticmethod
+    def _company_title_suffix(ticket: dict) -> str:
+        company = (ticket.get("company_name") or "").strip()
+        return f"  -  {company}" if company else ""
+
     def _show_detail(self, t: dict):
         self._save_current_notes()
         self._sync_ad_task(t["id"])
@@ -974,7 +995,8 @@ class MainWindow(tk.Toplevel):
         is_rejoiner = joiner_type == "rejoiner"
         name_row = tk.Frame(self._detail, bg=BG)
         name_row.pack(anchor="w", padx=24, pady=(20, 2))
-        tk.Label(name_row, text=t["name"], bg=BG, fg=TEXT,
+        title_color = PRIORITY_COMPANY_COLOR if self._is_priority_company(t) else TEXT
+        tk.Label(name_row, text=f"{t['name']}{self._company_title_suffix(t)}", bg=BG, fg=title_color,
                  font=("Segoe UI", 16, "bold")).pack(side="left")
         if joiner_type == "checking":
             badge_text = "Checking AD..."
@@ -1221,7 +1243,7 @@ class MainWindow(tk.Toplevel):
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
         tk.Label(frame, text=self._buddy_caption(buddy), bg=SOFT_BLUE, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
-        source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
+        source = self._buddy_source_text(buddy)
         tk.Label(frame, text=source, bg=SOFT_BLUE, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 8))
 
@@ -1232,6 +1254,14 @@ class MainWindow(tk.Toplevel):
         if display_name and display_name.lower() != sam.lower():
             return f"{display_name} ({sam})"
         return sam or display_name
+
+    @staticmethod
+    def _buddy_source_text(buddy: dict) -> str:
+        if buddy.get("author") == "manual":
+            return "Set manually"
+        if buddy.get("source") == "similar_role_field":
+            return "From Jira field: Person who is working in the similar job role"
+        return f"From comment by {buddy.get('author', '')}  •  {buddy.get('date', '')}"
 
     def _fill_multiple_buddy_box(self, frame: tk.Frame, buddy: dict, ticket_id: str):
         frame.configure(bg="#FFF4E5", highlightbackground="#FF991F", highlightthickness=1)
@@ -1271,9 +1301,7 @@ class MainWindow(tk.Toplevel):
             else:
                 active_candidates += 1
 
-            source = "Set manually" if candidate.get("author") == "manual" else (
-                f"From comment by {candidate.get('author', '')}  •  {candidate.get('date', '')}"
-            )
+            source = self._buddy_source_text(candidate)
             tk.Label(card, text=source, bg=card_bg, fg=GRAY,
                      font=("Segoe UI", 8), wraplength=440, justify="left").pack(
                          anchor="w", padx=8, pady=(0, 4))
@@ -1313,7 +1341,7 @@ class MainWindow(tk.Toplevel):
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
         tk.Label(frame, text=self._buddy_caption(buddy), bg=LIGHT_RED, fg=TEXT,
                  font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
-        source = "Set manually" if buddy.get("author") == "manual" else f"From comment by {buddy['author']}  •  {buddy['date']}"
+        source = self._buddy_source_text(buddy)
         tk.Label(frame, text=source, bg=LIGHT_RED, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 4))
 
@@ -1497,9 +1525,20 @@ class MainWindow(tk.Toplevel):
     def _resolve_buddy_from_comments(self, ticket_id: str, comments: list[dict]) -> dict | None:
         if ticket_id in self._manual_buddies:
             return self._buddy_hint.get(ticket_id)
+        ticket_buddy = self._similar_role_buddy_candidate(ticket_id)
+        if ticket_buddy:
+            resolved = self._resolve_detected_buddies(ticket_id, [ticket_buddy])
+            if resolved:
+                return resolved
         return self._resolve_detected_buddies(
             ticket_id, extract_buddies_from_comments(comments)
         )
+
+    def _similar_role_buddy_candidate(self, ticket_id: str) -> dict | None:
+        for ticket in self.tickets:
+            if ticket.get("id") == ticket_id:
+                return ticket.get("similar_role_buddy")
+        return None
 
     def _resolve_detected_buddies(self, ticket_id: str, detected: list[dict]) -> dict | None:
         if not detected:
@@ -1689,6 +1728,39 @@ class MainWindow(tk.Toplevel):
                      font=("Segoe UI", 8), wraplength=620, justify="left").pack(
                          anchor="w", padx=10, pady=(0, 8))
 
+        if info.get("phone") or info.get("sms_template"):
+            handoff = tk.Frame(box, bg="#E7F4EC")
+            handoff.pack(fill="x", padx=10, pady=(0, 10))
+
+            if info.get("phone"):
+                phone_row = tk.Frame(handoff, bg="#E7F4EC")
+                phone_row.pack(fill="x", pady=(0, 6))
+                tk.Label(phone_row, text=f"Phone: {info['phone']}", bg="#E7F4EC", fg=TEXT,
+                         font=("Segoe UI", 9, "bold")).pack(side="left")
+                self._make_btn(
+                    phone_row, "Copy phone",
+                    lambda phone=info["phone"]: self._copy_to_clipboard(phone),
+                    WHITE, GREEN,
+                ).pack(side="left", padx=(8, 0))
+
+            if info.get("sms_template"):
+                sms_row = tk.Frame(handoff, bg="#E7F4EC")
+                sms_row.pack(fill="x")
+                tk.Label(sms_row, text="SMS message:", bg="#E7F4EC", fg=GRAY,
+                         font=("Segoe UI", 9, "bold")).pack(side="left")
+                self._make_btn(
+                    sms_row, "Copy message",
+                    lambda text=info["sms_template"]: self._copy_to_clipboard(text),
+                    WHITE, GREEN,
+                ).pack(side="left", padx=(8, 0))
+
+                sms_box = self._make_text_box(handoff, height=5, readonly=False,
+                                              font=("Segoe UI", 9))
+                sms_box.insert("1.0", info["sms_template"])
+                sms_box.config(state="disabled")
+                sms_box.pack(fill="x", pady=(4, 0))
+                self._bind_text_widget_scroll(sms_box, self._detail_canvas)
+
     def _update_ad_button(self):
         if not self._ad_btn:
             return
@@ -1716,6 +1788,11 @@ class MainWindow(tk.Toplevel):
             self.storage.set(ticket_id, AD_TASK_INDEX, True, len(TASKS))
 
     # ── Helpers ───────────────────────────────────────────────────────────────
+
+    def _copy_to_clipboard(self, text: str):
+        self.clipboard_clear()
+        self.clipboard_append(text or "")
+        self._status.set("Copied to clipboard.")
 
     @staticmethod
     def _make_btn(parent, text, cmd, fg, bg, width: int | None = None):
@@ -1786,7 +1863,7 @@ class SetupDialog(tk.Toplevel):
         "api_token":             "",
         "jql":                   'assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)',
         "date_field":            "customfield_10980",
-        "leaver_jql":            'assignee = currentUser() AND labels = leaver AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)',
+        "leaver_jql":            'assignee = currentUser() AND (labels = leaver OR cf[11032] = "SF:offboarding" OR summary ~ "Leaver" OR summary ~ "offboarding") AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)',
         "snipeit_url":           "https://inventory.girteka.eu",
         "snipeit_token":         "",
         "remind_days_before":    "3",

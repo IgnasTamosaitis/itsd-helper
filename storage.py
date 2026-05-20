@@ -10,7 +10,7 @@ from datetime import datetime
 DATA_DIR = Path.home() / ".jira-reminders"
 TASKS_FILE = DATA_DIR / "tasks.json"
 CONFIG_FILE = DATA_DIR / "config.json"
-DEFAULT_TASK_COUNT = 5
+DEFAULT_TASK_COUNT = 6
 
 _KEYRING_SERVICE      = "jira-reminders"
 _SNIPEIT_KEYRING_USER = "snipeit-token"
@@ -154,6 +154,10 @@ class TaskStorage:
 
     def get(self, ticket_id: str, task_count: int = DEFAULT_TASK_COUNT) -> list[bool]:
         raw = self._data.get(ticket_id, [])
+        if task_count == 6 and isinstance(raw, list) and len(raw) == 5:
+            raw = [raw[0], raw[1], raw[2], raw[3], False, raw[4]]
+            self._data[ticket_id] = raw
+            _save(TASKS_FILE, self._data)
         result = list(raw) + [False] * task_count
         return result[:task_count]
 

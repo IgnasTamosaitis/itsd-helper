@@ -127,8 +127,13 @@ class App:
             self._fetch_and_notify()
             self._fetch_leavers()
 
-    _DEFAULT_LEAVER_JQL = (
+    _OLD_DEFAULT_LEAVER_JQL = (
         'assignee = currentUser() AND labels = leaver '
+        'AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)'
+    )
+    _DEFAULT_LEAVER_JQL = (
+        'assignee = currentUser() AND (labels = leaver OR cf[11032] = "SF:offboarding" '
+        'OR summary ~ "Leaver" OR summary ~ "offboarding") '
         'AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)'
     )
 
@@ -136,6 +141,8 @@ class App:
         if not self._jira:
             return
         jql = self._config.get("leaver_jql", "").strip() or self._DEFAULT_LEAVER_JQL
+        if " ".join(jql.split()) == " ".join(self._OLD_DEFAULT_LEAVER_JQL.split()):
+            jql = self._DEFAULT_LEAVER_JQL
         try:
             tickets = self._jira.get_leaver_tickets(jql)
             with self._leaver_tickets_lock:

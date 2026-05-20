@@ -785,13 +785,18 @@ class ADSetupWindow(tk.Toplevel):
         phone    = self.ticket.get("phone", "N/A") or "N/A"
         username = self._username_var.get() or "(username)"
         password = self._pwd_var.get()
-        msg = (f"Click box to copy SMS template  (send to {phone})\n\n"
-               f"Hello,\n\nYour username and password is:\n\n"
-               f"Username: {username}\nPassword: {password}\n\nHave a great day!")
+        msg = f"Click box to copy SMS template  (send to {phone})\n\n{self._sms_template(username, password)}"
         self._sms_box.config(state="normal")
         self._sms_box.delete("1.0", "end")
         self._sms_box.insert("1.0", msg)
         self._sms_box.config(state="disabled")
+
+    @staticmethod
+    def _sms_template(username: str, password: str) -> str:
+        return (
+            "Hello,\n\nYour username and password is:\n\n"
+            f"Username: {username}\nPassword: {password}\n\nHave a great day!"
+        )
 
     # ── Script ────────────────────────────────────────────────────────────────
 
@@ -982,6 +987,12 @@ class ADSetupWindow(tk.Toplevel):
             "email": self._email_var.get().strip(),
             "target_ou": self._ou_var.get().strip(),
             "groups_count": len(self._active_groups()),
+            "phone": self.ticket.get("phone", ""),
+            "password": self._pwd_var.get().strip(),
+            "sms_template": self._sms_template(
+                self._username_var.get().strip(),
+                self._pwd_var.get().strip(),
+            ),
         }
         self.storage.mark_ad_setup(self.ticket["id"], info)
         if self.on_completed:
@@ -1016,10 +1027,7 @@ class ADSetupWindow(tk.Toplevel):
     def _copy_sms_sensitive(self):
         username = self._username_var.get()
         password = self._pwd_var.get()
-        self._copy_sensitive(
-            f"Hello,\n\nYour username and password is:\n\n"
-            f"Username: {username}\nPassword: {password}\n\nHave a great day!"
-        )
+        self._copy_sensitive(self._sms_template(username, password))
 
     def _write_audit_log(self, status: str, output: str):
         try:

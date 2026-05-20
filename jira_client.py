@@ -1,5 +1,6 @@
 import re
 import unicodedata
+from html import unescape
 import requests
 from datetime import date, timedelta
 from dateutil.parser import parse as parse_date
@@ -35,7 +36,7 @@ _EXCLUDE_AUTHORS = {"Aleksandr Kovalevskij"}
 # which prevents "TSELE for the groups" being greedily captured as a name.
 _NAME = (
     r'(?-i:[A-ZŠŽĄČĘĖĮŲŪ][a-zšžąčęėįųū\-]{1,}'
-    r'(?:\s+[A-ZŠŽĄČĘĖĮŲŪ][a-zšžąčęėįųū\-]{1,}){1,2})'
+    r'(?:[^\S\r\n]+[A-ZŠŽĄČĘĖĮŲŪ][a-zšžąčęėįųū\-]{1,}){1,2})'
 )
 # SAM account: exactly 5 chars — first letter of first name + first 4 of last name
 # e.g. "TSELE", "tsele"  (upper or lower case)
@@ -45,10 +46,18 @@ _SAM = r'[A-Za-z][A-Za-z0-9]{4}\b'
 _BUDDY_VALUE = rf'({_NAME}|{_SAM})'
 
 _BUDDY_PATTERNS = [
+    # "existing employee: X", "reference employee - X"
+    rf'(?:existing|reference|template)\s+employee\s*[:\-]\s*{_BUDDY_VALUE}',
     # "rights as X", "access as X", "rights like X"
     rf'(?:rights?|access(?:es)?)\s+(?:as|like)\s+{_BUDDY_VALUE}',
+    # "rights same as for X", "accesses same as for X"
+    rf'(?:rights?|access(?:es?)?)\s+(?:the\s+)?same\s+as\s+(?:for\s+)?{_BUDDY_VALUE}',
+    rf'same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+for\s+{_BUDDY_VALUE}',
     # "use X as similar accesses", "use X as template", "use X as a base"
     rf'use\s+{_BUDDY_VALUE}\s+as\b',
+    # "use X's access rights", "X's access rights as reference"
+    rf'use\s+{_BUDDY_VALUE}(?:\'|’)?s?\s+(?:rights?|access(?:es?)?)',
+    rf'{_BUDDY_VALUE}(?:\'|’)?s?\s+(?:rights?|access(?:es?)?)\s+as\s+(?:a\s+)?(?:reference|template)',
     # "the person X", "person is X", "person who is working in the similar job role – X"
     rf'(?:the\s+)?person\s+(?:is\s+)?{_BUDDY_VALUE}',
     rf'person\s+who\s+.{{0,60}}[–\-]\s*{_BUDDY_VALUE}',
@@ -182,12 +191,13 @@ _CF_MANAGER      = "customfield_10978"
 _CF_REJOINER     = "customfield_14703"
 _CF_PHONE        = "customfield_10113"   # Phone Number (new joiner's phone)
 _CF_COMPANY_NAME = "customfield_10976"   # Company's name
+_CF_SIMILAR_ROLE = "customfield_11436"   # Person who is working in the similar job role
 
 _BASE_FETCH_FIELDS = [
     "summary", "status", "reporter",
     _CF_FIRST_NAME, _CF_LAST_NAME,
     _CF_POSITION, _CF_OFFICE, _CF_MANAGER, _CF_REJOINER,
-    _CF_PHONE, _CF_COMPANY_NAME,
+    _CF_PHONE, _CF_COMPANY_NAME, _CF_SIMILAR_ROLE,
 ]
 
 # Leaver custom fields (ITHW project, label: leaver)
@@ -197,13 +207,17 @@ _CF_LAST_EMPLOY_DATE = "customfield_11003"   # textfield: last employment date (
 _CF_LEAVER_COMPANY   = "customfield_10993"   # readonlyfield: company name
 _CF_LEAVER_DEPT      = "customfield_10992"   # readonlyfield: department
 _CF_LEAVER_JOB_TITLE = "customfield_10996"   # readonlyfield: job title
+_CF_LEAVING_PERSON   = "customfield_10147"   # userpicker: Leaving Person
+_CF_LEAVER_MANAGER   = "customfield_10057"   # userpicker: Manager
+_CF_SF_OFFBOARDING   = "customfield_11032"   # labels: SF:offboarding
 
 _LEAVER_FETCH_FIELDS = [
-    "summary", "status", "reporter", "assignee",
+    "summary", "status", "reporter", "assignee", "description",
     _CF_FIRST_NAME, _CF_LAST_NAME,
     _CF_OFFICE,
     _CF_LAST_DAY_OFFICE, _CF_LAST_WORKING_DAY, _CF_LAST_EMPLOY_DATE,
     _CF_LEAVER_COMPANY, _CF_LEAVER_DEPT, _CF_LEAVER_JOB_TITLE,
+    _CF_LEAVING_PERSON, _CF_LEAVER_MANAGER, _CF_SF_OFFBOARDING,
 ]
 
 
@@ -223,6 +237,93 @@ def _parse_start_date(raw: str):
         return parse_date(raw, dayfirst=True).date()
     except Exception:
         return None
+
+
+def _jira_userpicker_to_buddy_candidate(raw) -> dict | None:
+    """Return a buddy candidate dict from a Jira user picker field value."""
+    if not raw:
+        return None
+
+    if isinstance(raw, dict):
+        display_name = (raw.get("displayName") or raw.get("name") or "").strip()
+        account_id = (raw.get("accountId") or "").strip()
+        if not display_name:
+            display_name = account_id
+    else:
+        display_name = str(raw).strip()
+        account_id = ""
+
+    if not display_name:
+        return None
+
+    return {
+        "name": display_name,
+        "author": "Jira field",
+        "date": "",
+        "source": "similar_role_field",
+        "jira_account_id": account_id,
+    }
+
+
+def _jira_field_to_text(raw) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        return raw.strip()
+    if isinstance(raw, dict):
+        for key in ("displayName", "value", "name", "emailAddress", "accountId"):
+            value = raw.get(key)
+            if value:
+                return str(value).strip()
+        text = _adf_to_text(raw).strip()
+        if text:
+            return text
+    if isinstance(raw, list):
+        values = [_jira_field_to_text(item) for item in raw]
+        return ", ".join(value for value in values if value)
+    return str(raw).strip()
+
+
+def _clean_jira_text(value) -> str:
+    text = _jira_field_to_text(value)
+    if not text:
+        return ""
+    text = unescape(text).replace("\xa0", " ")
+    text = re.sub(r"(?i)<br\s*/?>", "\n", text)
+    text = re.sub(r"(?i)</p\s*>", "\n", text)
+    text = re.sub(r"<[^>]+>", "", text)
+    text = re.sub(r"[ \t]+", " ", text)
+    text = re.sub(r"\n\s+", "\n", text)
+    text = text.strip()
+    return "" if text.casefold() in {"none", "n/a", "-"} else text
+
+
+def _parse_leaver_description(description) -> dict[str, str]:
+    text = _clean_jira_text(description)
+    if not text:
+        return {}
+
+    data: dict[str, str] = {}
+    patterns = {
+        "first_name": r"\bFirst Name\s*:\s*([^\n\r]+)",
+        "last_name": r"\bLast Name\s*:\s*([^\n\r]+)",
+        "company": r"\b(?:Legal Entity|Company(?: name)?)\s*:\s*([^\n\r]+)",
+        "last_day": r"\b(?:Termination Date|Last working day|Last employment date)\s*:\s*([^\n\r]+)",
+    }
+    for key, pattern in patterns.items():
+        match = re.search(pattern, text, re.IGNORECASE)
+        if match:
+            value = _clean_jira_text(match.group(1))
+            if value:
+                data[key] = value
+    return data
+
+
+def _split_display_name(display_name: str) -> tuple[str, str]:
+    parts = [part for part in (display_name or "").strip().split() if part]
+    if len(parts) < 2:
+        return "", ""
+    return parts[0], " ".join(parts[1:])
 
 
 class JiraClient:
@@ -358,6 +459,7 @@ class JiraClient:
 
             phone        = (f.get(_CF_PHONE)        or "").strip()
             company_name = (f.get(_CF_COMPANY_NAME) or "").strip()
+            similar_role_buddy = _jira_userpicker_to_buddy_candidate(f.get(_CF_SIMILAR_ROLE))
 
             tickets.append(
                 {
@@ -373,6 +475,7 @@ class JiraClient:
                     "rejoiner":     rejoiner,
                     "phone":        phone,
                     "company_name": company_name,
+                    "similar_role_buddy": similar_role_buddy,
                     "status":         (f.get("status") or {}).get("name", ""),
                     "start_date":     start_date,
                     "url":            f"{self.base}/browse/{issue['key']}",
@@ -461,27 +564,36 @@ class JiraClient:
         )
         r.raise_for_status()
 
-        def _clean(v) -> str:
-            s = (v or "").strip()
-            return "" if s in ("None", "none", "-") else s
-
         tickets = []
         for issue in r.json().get("issues", []):
             f = issue["fields"]
+            desc_data = _parse_leaver_description(f.get("description"))
+            leaving_person = _clean_jira_text(f.get(_CF_LEAVING_PERSON))
+            leaving_first, leaving_last = _split_display_name(leaving_person)
 
-            first = (f.get(_CF_FIRST_NAME) or "").strip()
-            last  = (f.get(_CF_LAST_NAME)  or "").strip()
+            first = (
+                _clean_jira_text(f.get(_CF_FIRST_NAME))
+                or desc_data.get("first_name", "")
+                or leaving_first
+            )
+            last = (
+                _clean_jira_text(f.get(_CF_LAST_NAME))
+                or desc_data.get("last_name", "")
+                or leaving_last
+            )
             name  = f"{first} {last}".strip() or f.get("summary", issue["key"])
 
             # Prefer the datepicker field; fall back to the text field
             last_day_raw = (f.get(_CF_LAST_DAY_OFFICE)
                             or f.get(_CF_LAST_WORKING_DAY)
                             or f.get(_CF_LAST_EMPLOY_DATE)
+                            or desc_data.get("last_day")
                             or "")
             last_day = _parse_start_date(last_day_raw)
 
             reporter_raw = f.get("reporter") or {}
             assignee_raw = f.get("assignee") or {}
+            company = _clean_jira_text(f.get(_CF_LEAVER_COMPANY)) or desc_data.get("company", "")
 
             tickets.append({
                 "id":           issue["id"],
@@ -491,10 +603,12 @@ class JiraClient:
                 "first_name":   first,
                 "last_name":    last,
                 "last_day":     last_day,
-                "office":       _clean(f.get(_CF_OFFICE)),
-                "company":      _clean(f.get(_CF_LEAVER_COMPANY)),
-                "department":   _clean(f.get(_CF_LEAVER_DEPT)),
-                "job_title":    _clean(f.get(_CF_LEAVER_JOB_TITLE)),
+                "office":       _clean_jira_text(f.get(_CF_OFFICE)),
+                "company":      company,
+                "department":   _clean_jira_text(f.get(_CF_LEAVER_DEPT)),
+                "job_title":    _clean_jira_text(f.get(_CF_LEAVER_JOB_TITLE)),
+                "manager":      _clean_jira_text(f.get(_CF_LEAVER_MANAGER)),
+                "leaving_person": leaving_person,
                 "status":       (f.get("status") or {}).get("name", ""),
                 "url":          f"{self.base}/browse/{issue['key']}",
                 "assignee_id":  assignee_raw.get("accountId", ""),

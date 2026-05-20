@@ -12,7 +12,6 @@ Scenarios detected by searching AD by first+last name:
 """
 import re
 import secrets
-import string
 import subprocess
 import unicodedata
 
@@ -210,13 +209,28 @@ DEFAULT_GROUPS: dict[str, list[str]] = {
 
 # ── Password generation ───────────────────────────────────────────────────────
 
-def generate_password(length: int = 14) -> str:
-    chars = string.ascii_letters + string.digits + "!@#$%"
-    while True:
-        pwd = "".join(secrets.choice(chars) for _ in range(length))
-        if (any(c.isupper() for c in pwd) and any(c.islower() for c in pwd) and
-                any(c.isdigit() for c in pwd) and any(c in "!@#$%" for c in pwd)):
-            return pwd
+def generate_password(length: int = 10) -> str:
+    """Generate a short readable password with one special character."""
+    if length < 4:
+        raise ValueError("Password length must be at least 4 characters.")
+
+    upper = "ABCDEFGHJKLMNPQRSTUVWXYZ"
+    lower = "abcdefghijkmnopqrstuvwxyz"
+    digits = "23456789"
+    special = "#@!"
+    pool = upper + lower + digits
+
+    chars = [
+        secrets.choice(upper),
+        secrets.choice(lower),
+        secrets.choice(digits),
+        secrets.choice(special),
+    ]
+    chars.extend(secrets.choice(pool) for _ in range(length - len(chars)))
+
+    randomizer = secrets.SystemRandom()
+    randomizer.shuffle(chars)
+    return "".join(chars)
 
 # ── PowerShell runner ─────────────────────────────────────────────────────────
 
@@ -503,12 +517,13 @@ def build_verification_script(sam: str) -> str:
     """Returns a PS script that fetches and displays key attributes for verification."""
     return f"""
 Import-Module ActiveDirectory -ErrorAction Stop
-$u = Get-ADUser -Identity '{_e(sam)}' -Properties Title,Description,Department,Company,Office,EmailAddress,Manager,extensionAttribute5,extensionAttribute10,extensionAttribute14,extensionAttribute15,targetAddress,proxyAddresses,Enabled,LockedOut,PasswordLastSet,UserPrincipalName -ErrorAction Stop
+$u = Get-ADUser -Identity '{_e(sam)}' -Properties Title,Description,Department,Company,Office,EmailAddress,Manager,extensionAttribute5,extensionAttribute10,extensionAttribute14,extensionAttribute15,targetAddress,proxyAddresses,Enabled,LockedOut,PasswordLastSet,PasswordExpired,UserPrincipalName -ErrorAction Stop
 $mgrName = if ($u.Manager) {{ $u.Manager -replace '^CN=([^,]+),.+$','$1' }} else {{ '' }}
 Write-Host "=== Verification: $($u.SamAccountName) ==="
 Write-Host "Enabled:              $($u.Enabled)"
 Write-Host "Locked out:           $($u.LockedOut)"
 Write-Host "PasswordLastSet:      $($u.PasswordLastSet)"
+Write-Host "Must change password: $($u.PasswordExpired)"
 Write-Host "UserPrincipalName:    $($u.UserPrincipalName)"
 Write-Host "Title:                $($u.Title)"
 Write-Host "Description:          $($u.Description)"
@@ -557,6 +572,7 @@ def _password_reset_lines(sam: str, password: str) -> list[str]:
         '    Write-Host "OK  Account already unlocked"',
         "}",
         f"Set-ADUser -Identity '{sam_e}' -ChangePasswordAtLogon $false",
+        'Write-Host "OK  User must change password at next logon disabled"',
         "Add-Type -AssemblyName System.DirectoryServices.AccountManagement",
         "$ctx = New-Object System.DirectoryServices.AccountManagement.PrincipalContext(",
         "    [System.DirectoryServices.AccountManagement.ContextType]::Domain, $dc)",
