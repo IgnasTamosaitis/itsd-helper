@@ -1,14 +1,15 @@
 import os
+import re
 import threading
 import tkinter as tk
 from tkinter import messagebox
 import webbrowser
-from datetime import date
+from datetime import date, datetime
 import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
 from leaver_document import generate_leaver_return_document
-from ad_automation import find_user_accounts, classify_scenario
+from ad_automation import find_user_accounts, classify_scenario, offboard_leaver_account
 
 TASKS = [
     "Active Directory account setup",
@@ -29,6 +30,9 @@ RED    = "#C9372C"
 TEXT   = "#172B4D"
 BORDER = "#DFE3EA"
 SOFT_BLUE = "#E9F2FF"
+SOFT_GOLD = "#FFF4E5"
+GOLD = "#FF991F"
+DARK_GOLD = "#B76E00"
 INPUT_BORDER = "#C7D1DB"
 INPUT_BG = "#FFFFFF"
 ACTION_BTN_WIDTH = 20
@@ -51,6 +55,10 @@ class MainWindow(tk.Toplevel):
         self._ad_btn: tk.Button | None = None
         self._ask_btn: tk.Button | None = None
         self._comments_cache: dict = {}
+        self._joiner_snipe_frame: tk.Frame | None = None
+        self._joiner_snipe_ticket_id: str = ""
+        self._joiner_snipe_refresh_job = None
+        self._joiner_snipe_fetching: set[str] = set()
         self._buddy_hint: dict = {}    # ticket_id -> {name, author, date} | None
         self._buddy_fetched: set = set()
         self._buddy_box_frame: tk.Frame | None = None
@@ -75,6 +83,8 @@ class MainWindow(tk.Toplevel):
         self._leaver_open_btn: tk.Button | None = None
         self._add_accountants_btn: tk.Button | None = None
         self._leaver_doc_btn: tk.Button | None = None
+        self._leaver_ad_offboard_btn: tk.Button | None = None
+        self._leaver_snipe_checkin_btn: tk.Button | None = None
         self._leaver_comments_cache: dict = {}
         self._leaver_comment_box: tk.Text | None = None
         self._leaver_comment_ticket_id: str | None = None
@@ -270,11 +280,6 @@ class MainWindow(tk.Toplevel):
                                               self._generate_leaver_return_act,
                                               WHITE, GREEN, width=ACTION_BTN_WIDTH)
         self._leaver_doc_btn.pack(side="right", padx=(0, 4), pady=8)
-        self._add_accountants_btn = self._make_btn(btm, "Add accountants",
-                                                   self._leaver_add_accountants,
-                                                   WHITE, "#FF991F",
-                                                   width=ACTION_BTN_WIDTH)
-        self._add_accountants_btn.pack(side="right", padx=(0, 4), pady=8)
 
         # Body
         body = tk.Frame(parent, bg=BG)
@@ -398,6 +403,16 @@ class MainWindow(tk.Toplevel):
         tk.Label(name_row, text="Leaver", bg=RED, fg=WHITE,
                  font=("Segoe UI", 9, "bold"), padx=8, pady=3,
                  relief="flat").pack(side="left", padx=(12, 0))
+        if self.storage.leaver_action_done(t["id"], "ad_offboard"):
+            tk.Label(name_row, text="AD user groups removed and account disabled",
+                     bg="#E7F4EC", fg=GREEN,
+                     font=("Segoe UI", 8, "bold"), padx=8, pady=3,
+                     relief="flat").pack(side="left", padx=(8, 0))
+        if self.storage.leaver_action_done(t["id"], "snipe_checkin"):
+            tk.Label(name_row, text="All assets checked in in Snipe-IT",
+                     bg="#E7F4EC", fg=GREEN,
+                     font=("Segoe UI", 8, "bold"), padx=8, pady=3,
+                     relief="flat").pack(side="left", padx=(8, 0))
 
         if t.get("summary"):
             tk.Label(self._leaver_detail, text=t["summary"], bg=BG, fg=GRAY,
@@ -441,6 +456,21 @@ class MainWindow(tk.Toplevel):
         tk.Label(self._leaver_detail, text=t["key"], bg=BG, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=24, pady=(0, 10))
 
+        action_row = tk.Frame(self._leaver_detail, bg=BG)
+        action_row.pack(anchor="w", padx=24, pady=(0, 10))
+        self._leaver_ad_offboard_btn = self._make_btn(
+            action_row, "Disable AD + 3CX",
+            self._leaver_disable_ad_and_3cx,
+            WHITE, RED, width=ACTION_BTN_WIDTH,
+        )
+        self._leaver_ad_offboard_btn.pack(side="left")
+        self._leaver_snipe_checkin_btn = self._make_btn(
+            action_row, "Check in Snipe-IT",
+            self._leaver_checkin_snipe_assets,
+            WHITE, ACCENT, width=ACTION_BTN_WIDTH,
+        )
+        self._leaver_snipe_checkin_btn.pack(side="left", padx=(8, 0))
+
         # Laptop card (auto-fetched from Snipe-IT)
         self._leaver_laptop_frame = tk.Frame(
             self._leaver_detail, bg=SOFT_BLUE,
@@ -477,6 +507,12 @@ class MainWindow(tk.Toplevel):
         self._make_btn(post_row, "Post buyout template",
                        self._post_current_laptop_template,
                        WHITE, GREEN, width=ACTION_BTN_WIDTH).pack(side="right", padx=(0, 8))
+        self._add_accountants_btn = self._make_btn(
+            post_row, "Add accountants",
+            self._leaver_add_accountants,
+            WHITE, "#FF991F", width=ACTION_BTN_WIDTH,
+        )
+        self._add_accountants_btn.pack(side="right", padx=(0, 8))
         self._make_btn(post_row, "Post comment",
                        lambda tid=t["id"], key=t["key"]: self._leaver_post_comment(tid, key),
                        WHITE, ACCENT, width=ACTION_BTN_WIDTH).pack(side="right")
@@ -552,20 +588,11 @@ class MainWindow(tk.Toplevel):
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
 
         info_row = tk.Frame(f, bg="#E7F4EC")
-        info_row.pack(fill="x", padx=10, pady=(2, 4))
+        info_row.pack(fill="x", padx=10, pady=(2, 8))
         tk.Label(info_row, text=f"Model:  {laptop['model']}", bg="#E7F4EC", fg=TEXT,
                  font=("Segoe UI", 10, "bold")).pack(anchor="w")
         tk.Label(info_row, text=f"SN:       {laptop['serial']}", bg="#E7F4EC", fg=TEXT,
                  font=("Segoe UI", 10)).pack(anchor="w")
-
-        btn_row = tk.Frame(f, bg="#E7F4EC")
-        btn_row.pack(anchor="w", padx=10, pady=(0, 8))
-        self._make_btn(btn_row, "Fill comment template",
-                       lambda: self._fill_laptop_comment_template(laptop),
-                       WHITE, GREEN, width=ACTION_BTN_WIDTH).pack(side="left")
-        self._make_btn(btn_row, "Post template comment",
-                       self._post_current_laptop_template,
-                       WHITE, ACCENT, width=ACTION_BTN_WIDTH).pack(side="left", padx=(8, 0))
 
     def _draw_laptop_card_not_found(self):
         f = self._leaver_laptop_frame
@@ -734,6 +761,117 @@ class MainWindow(tk.Toplevel):
 
     # ── Leavers actions ───────────────────────────────────────────────────────
 
+    def _leaver_disable_ad_and_3cx(self):
+        if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
+            return
+        ticket = self.leaver_tickets[self._leaver_sel]
+        if not messagebox.askyesno(
+            "Confirm AD offboarding",
+            f"Disable the AD account for {ticket['name']}?\n\n"
+            "This will remove all AD groups except the primary Domain Users group, "
+            "clear the IP Phone field for 3CX, and move the account to "
+            "OU=Diseiblinti,DC=girteka,DC=lt.",
+            parent=self,
+        ):
+            return
+
+        if self._leaver_ad_offboard_btn:
+            self._leaver_ad_offboard_btn.config(state="disabled")
+        self._leavers_status.set("Applying AD offboarding...")
+
+        def _do():
+            try:
+                result = offboard_leaver_account(
+                    ticket.get("first_name", ""),
+                    ticket.get("last_name", ""),
+                    ticket.get("name", ""),
+                )
+                self.storage.mark_leaver_action(ticket["id"], "ad_offboard", {
+                    "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "account": result.get("account", ""),
+                    "removed_groups": result.get("removed_groups", 0),
+                    "target_ou": result.get("target_ou", ""),
+                })
+
+                def _ok():
+                    self._leavers_status.set(
+                        f"AD offboarding completed for {result.get('account', ticket['name'])}."
+                    )
+                    if (self._leaver_sel is not None
+                            and self._leaver_sel < len(self.leaver_tickets)
+                            and self.leaver_tickets[self._leaver_sel]["id"] == ticket["id"]):
+                        self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
+
+                self.after(0, _ok)
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: (
+                    self._leavers_status.set("AD offboarding failed."),
+                    messagebox.showerror("AD offboarding failed", err, parent=self),
+                ))
+            finally:
+                if self._leaver_ad_offboard_btn:
+                    btn = self._leaver_ad_offboard_btn
+                    self.after(0, lambda btn=btn: btn.winfo_exists() and btn.config(state="normal"))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _leaver_checkin_snipe_assets(self):
+        if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
+            return
+        ticket = self.leaver_tickets[self._leaver_sel]
+        if not self._snipeit:
+            messagebox.showwarning(
+                "Snipe-IT not configured",
+                "Add Snipe-IT credentials in Settings before checking in assets.",
+                parent=self,
+            )
+            return
+        if not messagebox.askyesno(
+            "Confirm Snipe-IT check-in",
+            f"Check in all Snipe-IT assets assigned to {ticket['name']}?",
+            parent=self,
+        ):
+            return
+
+        if self._leaver_snipe_checkin_btn:
+            self._leaver_snipe_checkin_btn.config(state="disabled")
+        self._leavers_status.set("Checking in Snipe-IT assets...")
+
+        def _do():
+            try:
+                result = self._snipeit.checkin_all_user_assets(
+                    ticket.get("first_name", ""),
+                    ticket.get("last_name", ""),
+                )
+                self.storage.mark_leaver_action(ticket["id"], "snipe_checkin", {
+                    "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+                    "count": result.get("count", 0),
+                    "user_id": (result.get("user") or {}).get("id", ""),
+                })
+
+                def _ok():
+                    count = result.get("count", 0)
+                    self._leavers_status.set(
+                        f"Snipe-IT check-in completed: {count} asset(s)."
+                    )
+                    if (self._leaver_sel is not None
+                            and self._leaver_sel < len(self.leaver_tickets)
+                            and self.leaver_tickets[self._leaver_sel]["id"] == ticket["id"]):
+                        self._show_leaver_detail(self.leaver_tickets[self._leaver_sel])
+
+                self.after(0, _ok)
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: (
+                    self._leavers_status.set("Snipe-IT check-in failed."),
+                    messagebox.showerror("Snipe-IT check-in failed", err, parent=self),
+                ))
+            finally:
+                if self._leaver_snipe_checkin_btn:
+                    btn = self._leaver_snipe_checkin_btn
+                    self.after(0, lambda btn=btn: btn.winfo_exists() and btn.config(state="normal"))
+        threading.Thread(target=_do, daemon=True).start()
+
     def _generate_leaver_return_act(self):
         if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
             return
@@ -837,6 +975,15 @@ class MainWindow(tk.Toplevel):
                 self._add_accountants_btn.config(state="normal", bg="#FF991F", fg=WHITE)
             else:
                 self._add_accountants_btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
+        for btn, color in (
+            (self._leaver_ad_offboard_btn, RED),
+            (self._leaver_snipe_checkin_btn, ACCENT),
+        ):
+            if btn:
+                if has_sel:
+                    btn.config(state="normal", bg=color, fg=WHITE)
+                else:
+                    btn.config(state="disabled", bg="#DDE3EA", fg=GRAY)
 
     def update_leaver_tickets(self, tickets: list):
         self.leaver_tickets = tickets
@@ -952,14 +1099,31 @@ class MainWindow(tk.Toplevel):
 
             def _apply():
                 self._ad_joiner_checks.discard(ticket_id)
-                for current in self.tickets:
+                selected_id = (
+                    self.tickets[self._sel].get("id")
+                    if self._sel is not None and self._sel < len(self.tickets)
+                    else ""
+                )
+                updated_index = None
+                for idx, current in enumerate(self.tickets):
                     if current.get("id") == ticket_id:
                         current["ad_joiner_scenario"] = scenario
+                        updated_index = idx
                         break
                 self._refresh_list()
-                if (self._sel is not None and self._sel < len(self.tickets)
-                        and self.tickets[self._sel].get("id") == ticket_id):
-                    self._show_detail(self.tickets[self._sel])
+                restore_id = selected_id or ticket_id
+                for idx, current in enumerate(self.tickets):
+                    if current.get("id") == restore_id:
+                        self._sel = idx
+                        self._listbox.selection_clear(0, "end")
+                        self._listbox.selection_set(idx)
+                        self._listbox.activate(idx)
+                        self._listbox.see(idx)
+                        if restore_id == ticket_id or updated_index == idx:
+                            self._show_detail(current)
+                        break
+                self._update_ad_button()
+                self._update_ask_btn()
 
             self.after(0, _apply)
 
@@ -980,12 +1144,20 @@ class MainWindow(tk.Toplevel):
         self._save_current_notes()
         self._sync_ad_task(t["id"])
         self._ensure_ad_joiner_type_check(t)
+        if self._joiner_snipe_refresh_job:
+            try:
+                self.after_cancel(self._joiner_snipe_refresh_job)
+            except tk.TclError:
+                pass
+            self._joiner_snipe_refresh_job = None
         self._hint.place_forget()
         for w in self._detail.winfo_children():
             w.destroy()
         self._task_vars = []
         self._notes_box = None
         self._notes_ticket_id = None
+        self._joiner_snipe_frame = None
+        self._joiner_snipe_ticket_id = ""
         self._detail_sb.place(relx=1.0, rely=0.0, relheight=1.0, anchor="ne", width=16)
         self._detail_canvas.place(x=0, y=0, relwidth=1.0, relheight=1.0, width=-16)
         self._detail_canvas.yview_moveto(0.0)
@@ -1047,7 +1219,15 @@ class MainWindow(tk.Toplevel):
         tk.Label(self._detail, text=t["key"], bg=BG, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=24, pady=(0, 10))
 
-        self._show_ad_setup_summary(t)
+        if self.storage.ad_setup_done(t["id"]) or self._snipeit:
+            summary_row = tk.Frame(self._detail, bg=BG)
+            summary_row.pack(fill="x", padx=24, pady=(2, 12))
+            summary_row.columnconfigure(0, weight=1, uniform="joiner_summary")
+            summary_row.columnconfigure(1, weight=1, uniform="joiner_summary")
+            if self.storage.ad_setup_done(t["id"]):
+                self._show_ad_setup_summary(t, parent=summary_row, column=0)
+            if self._snipeit:
+                self._show_joiner_snipe_assets(t, parent=summary_row, column=1)
         self._show_buddy_box(t)
 
         # Divider
@@ -1204,8 +1384,8 @@ class MainWindow(tk.Toplevel):
 
     def _show_buddy_box(self, t: dict):
         tid = t["id"]
-        frame = tk.Frame(self._detail, bg=SOFT_BLUE,
-                         highlightbackground=ACCENT, highlightthickness=1)
+        frame = tk.Frame(self._detail, bg=SOFT_GOLD,
+                         highlightbackground=GOLD, highlightthickness=1)
         frame.pack(fill="x", padx=24, pady=(2, 10))
         self._buddy_box_frame = frame
         self._buddy_box_ticket = tid
@@ -1223,7 +1403,7 @@ class MainWindow(tk.Toplevel):
                 self._draw_buddy_no_result(frame, tid)
         else:
             tk.Label(frame, text="Scanning comments for buddy info...",
-                     bg=SOFT_BLUE, fg=GRAY,
+                     bg=SOFT_GOLD, fg=GRAY,
                      font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=10, pady=6)
 
     def _fill_buddy_box(self, frame: tk.Frame, buddy: dict, ticket_id: str):
@@ -1238,14 +1418,17 @@ class MainWindow(tk.Toplevel):
             self._fill_disabled_buddy_box(frame, buddy, ticket_id)
             return
 
-        frame.configure(bg=SOFT_BLUE, highlightbackground=ACCENT)
-        tk.Label(frame, text="Suggested buddy", bg=SOFT_BLUE, fg=ACCENT,
+        frame.configure(bg=SOFT_GOLD, highlightbackground=GOLD)
+        tk.Label(frame, text="Suggested buddy", bg=SOFT_GOLD, fg=DARK_GOLD,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        tk.Label(frame, text=self._buddy_caption(buddy), bg=SOFT_BLUE, fg=TEXT,
-                 font=("Segoe UI", 11, "bold")).pack(anchor="w", padx=10, pady=(2, 0))
+        self._make_selectable_label(
+            frame, self._buddy_caption(buddy), SOFT_GOLD, TEXT,
+            font=("Segoe UI", 11, "bold"),
+        ).pack(anchor="w", fill="x", padx=10, pady=(2, 0))
         source = self._buddy_source_text(buddy)
-        tk.Label(frame, text=source, bg=SOFT_BLUE, fg=GRAY,
-                 font=("Segoe UI", 8)).pack(anchor="w", padx=10, pady=(2, 8))
+        self._make_selectable_label(frame, source, SOFT_GOLD, GRAY,
+                                    font=("Segoe UI", 8)).pack(
+                                        anchor="w", fill="x", padx=10, pady=(2, 8))
 
     @staticmethod
     def _buddy_caption(buddy: dict) -> str:
@@ -1691,75 +1874,236 @@ class MainWindow(tk.Toplevel):
         self._update_ad_button()
         self._update_ask_btn()
 
-    def _show_ad_setup_summary(self, t: dict):
+    def _show_joiner_snipe_assets(self, t: dict, parent: tk.Frame, column: int = 1):
+        box = tk.Frame(parent, bg="#E9F2FF", highlightbackground=ACCENT,
+                       highlightthickness=1)
+        box.grid(row=0, column=column, sticky="nsew", padx=(6, 0), pady=0)
+        box.columnconfigure(0, weight=1)
+        self._joiner_snipe_frame = box
+        self._joiner_snipe_ticket_id = t["id"]
+        self._draw_joiner_snipe_state("Loading Snipe-IT assets...")
+        self._fetch_joiner_snipe_assets(t, schedule_next=True)
+
+    def _draw_joiner_snipe_state(
+        self,
+        message: str = "",
+        assets: list[dict] | None = None,
+        error: bool = False,
+    ):
+        frame = self._joiner_snipe_frame
+        if not frame:
+            return
+        try:
+            if not frame.winfo_exists():
+                return
+        except tk.TclError:
+            return
+
+        for child in frame.winfo_children():
+            child.destroy()
+        bg = "#FFF4E5" if error else "#E9F2FF"
+        fg = "#B76E00" if error else ACCENT
+        frame.configure(bg=bg, highlightbackground=fg if error else ACCENT)
+
+        header = tk.Frame(frame, bg=bg)
+        header.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(header, text="Assigned assets (Snipe-IT)", bg=bg, fg=fg,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        if assets is not None:
+            if not assets:
+                self._make_selectable_label(frame, "No assets assigned yet.", bg, GRAY,
+                                            font=("Segoe UI", 9)).pack(
+                                                anchor="w", fill="x", padx=10, pady=(0, 8))
+                return
+            for asset in assets:
+                self._draw_joiner_snipe_asset(frame, asset, bg)
+            return
+
+        self._make_selectable_label(frame, message, bg, fg if error else GRAY,
+                                    font=("Segoe UI", 9)).pack(
+                                        anchor="w", fill="x", padx=10, pady=(0, 8))
+
+    def _draw_joiner_snipe_asset(self, parent: tk.Frame, asset: dict, bg: str):
+        model = ((asset.get("model") or {}).get("name") or asset.get("name") or "Asset").strip()
+        tag = (asset.get("asset_tag") or "").strip()
+        serial = (asset.get("serial") or "").strip()
+        category = ((asset.get("category") or {}).get("name") or "").strip()
+        status = self._snipe_asset_status(asset)
+        location = asset.get("location", "")
+        if isinstance(location, dict):
+            location = location.get("name", "")
+
+        row = tk.Frame(parent, bg=bg)
+        row.pack(fill="x", padx=10, pady=(0, 8))
+        title_bits = [part for part in (model, f"#{tag}" if tag else "") if part]
+        self._make_selectable_label(row, "  ".join(title_bits), bg, TEXT,
+                                    font=("Segoe UI", 10, "bold")).pack(
+                                        anchor="w", fill="x")
+        meta = []
+        if serial:
+            meta.append(f"SN: {serial}")
+        if category:
+            meta.append(category)
+        if status:
+            meta.append(str(status))
+        if location:
+            meta.append(str(location))
+        if meta:
+            self._make_selectable_label(row, "  |  ".join(meta), bg, GRAY,
+                                        font=("Segoe UI", 8), wrap=520).pack(
+                                            anchor="w", fill="x", pady=(1, 0))
+
+    @staticmethod
+    def _snipe_asset_status(asset: dict) -> str:
+        status = asset.get("status_label", "")
+        if isinstance(status, dict):
+            status = status.get("name", "")
+        return str(status or "").strip().casefold()
+
+    def _fetch_joiner_snipe_assets(self, ticket: dict, schedule_next: bool = False):
+        ticket_id = ticket.get("id", "")
+        if not self._snipeit or not ticket_id:
+            return
+        if ticket_id in self._joiner_snipe_fetching:
+            return
+        self._joiner_snipe_fetching.add(ticket_id)
+
+        def _do():
+            assets = None
+            message = ""
+            error = False
+            try:
+                user = self._snipeit.find_exact_user(
+                    ticket.get("first_name", ""), ticket.get("last_name", "")
+                )
+                if not user:
+                    assets = []
+                    message = "Exact Snipe-IT user not found."
+                else:
+                    assets = [
+                        asset for asset in self._snipeit.get_user_assets(user["id"])
+                        if self._snipe_asset_status(asset) != "archived"
+                    ]
+            except Exception as exc:
+                message = f"Could not load Snipe-IT assets: {exc}"
+                error = True
+
+            def _apply():
+                self._joiner_snipe_fetching.discard(ticket_id)
+                if self._joiner_snipe_ticket_id != ticket_id:
+                    return
+                if assets is not None:
+                    if assets:
+                        self._draw_joiner_snipe_state(assets=assets)
+                    elif message:
+                        self._draw_joiner_snipe_state(message)
+                    else:
+                        self._draw_joiner_snipe_state(assets=[])
+                else:
+                    self._draw_joiner_snipe_state(message, error=error)
+                if schedule_next and self._joiner_snipe_ticket_id == ticket_id:
+                    self._joiner_snipe_refresh_job = self.after(
+                        30000,
+                        lambda tid=ticket_id: self._refresh_joiner_snipe_assets(tid),
+                    )
+
+            self.after(0, _apply)
+
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _refresh_joiner_snipe_assets(self, ticket_id: str):
+        if self._sel is None or self._sel >= len(self.tickets):
+            return
+        ticket = self.tickets[self._sel]
+        if ticket.get("id") != ticket_id:
+            return
+        self._fetch_joiner_snipe_assets(ticket, schedule_next=True)
+
+    def _show_ad_setup_summary(self, t: dict, parent: tk.Frame | None = None, column: int = 0):
         info = self.storage.get_ad_setup(t["id"])
         if not info:
             return
 
-        box = tk.Frame(self._detail, bg="#E7F4EC", highlightbackground="#B8E0C7",
+        parent = parent or self._detail
+        box = tk.Frame(parent, bg="#E7F4EC", highlightbackground="#B8E0C7",
                        highlightthickness=1)
-        box.pack(fill="x", padx=24, pady=(2, 12))
-        tk.Label(box, text="AD setup completed", bg="#E7F4EC", fg=GREEN,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w", padx=10, pady=(8, 2))
-
+        if parent is self._detail:
+            box.pack(fill="x", padx=24, pady=(2, 12))
+        else:
+            box.grid(row=0, column=column, sticky="nsew", padx=(0, 6), pady=0)
         details = []
-        if info.get("completed_at"):
-            details.append(f"Completed: {info['completed_at']}")
-        if info.get("status"):
-            details.append(f"Result: {info['status']}")
-        if info.get("account"):
-            details.append(f"Account: {info['account']}")
         if info.get("email"):
             details.append(f"Email: {info['email']}")
-        if info.get("scenario"):
-            details.append(f"Case: {str(info['scenario']).replace('_', ' ')}")
         if info.get("groups_count") not in (None, ""):
             details.append(f"Groups added: {info['groups_count']}")
+
+        account = (info.get("account") or "").strip()
+        password = (info.get("password") or "").strip()
+        sms_template = info.get("sms_template") or (
+            "Hello,\n\nYour username and password is:\n\n"
+            f"Username: {account}\nPassword: {password}\n\nHave a great day!"
+            if account and password else ""
+        )
+        header = tk.Frame(box, bg="#E7F4EC")
+        header.pack(fill="x", padx=10, pady=(8, 2))
+        tk.Label(header, text="AD setup completed", bg="#E7F4EC", fg=GREEN,
+                 font=("Segoe UI", 10, "bold")).pack(side="left")
+
+        if account:
+            account_frame = tk.Frame(box, bg="#E7F4EC")
+            account_frame.pack(fill="x", padx=10, pady=(4, 8))
+            self._make_selectable_label(
+                account_frame, f"Account: {account}", "#E7F4EC", TEXT,
+                font=("Segoe UI", 12, "bold"),
+            ).pack(anchor="w", fill="x")
+            if password:
+                self._make_selectable_label(
+                    account_frame, f"Password: {password}", "#E7F4EC", TEXT,
+                    font=("Segoe UI", 10, "bold"),
+                ).pack(anchor="w", fill="x", pady=(2, 0))
 
         details_frame = tk.Frame(box, bg="#E7F4EC")
         details_frame.pack(fill="x", padx=10, pady=(0, 8))
         for detail in details:
-            tk.Label(details_frame, text=detail, bg="#E7F4EC", fg=TEXT,
-                     font=("Segoe UI", 9), anchor="w", justify="left").pack(
-                         anchor="w", fill="x", pady=1)
+            self._make_selectable_label(details_frame, detail, "#E7F4EC", TEXT,
+                                        font=("Segoe UI", 9)).pack(
+                                            anchor="w", fill="x", pady=1)
 
         if info.get("target_ou"):
-            tk.Label(box, text=f"Target folder: {info['target_ou']}", bg="#E7F4EC", fg=GRAY,
-                     font=("Segoe UI", 8), wraplength=620, justify="left").pack(
-                         anchor="w", padx=10, pady=(0, 8))
+            self._make_selectable_label(
+                box, f"Target folder: {info['target_ou']}", "#E7F4EC", GRAY,
+                font=("Segoe UI", 8), wrap=620,
+            ).pack(anchor="w", fill="x", padx=10, pady=(0, 8))
 
-        if info.get("phone") or info.get("sms_template"):
+        if info.get("phone") or sms_template:
             handoff = tk.Frame(box, bg="#E7F4EC")
             handoff.pack(fill="x", padx=10, pady=(0, 10))
 
+            action_row = tk.Frame(handoff, bg="#E7F4EC")
+            action_row.pack(fill="x")
+            action_row.columnconfigure(0, weight=1)
+            action_col = 0
+
             if info.get("phone"):
-                phone_row = tk.Frame(handoff, bg="#E7F4EC")
-                phone_row.pack(fill="x", pady=(0, 6))
-                tk.Label(phone_row, text=f"Phone: {info['phone']}", bg="#E7F4EC", fg=TEXT,
-                         font=("Segoe UI", 9, "bold")).pack(side="left")
+                phone = self._dedupe_repeated_country_code(info["phone"])
+                self._make_selectable_label(
+                    action_row, f"Phone: {phone}", "#E7F4EC", TEXT,
+                    font=("Segoe UI", 9, "bold"),
+                ).grid(row=0, column=0, sticky="ew")
                 self._make_btn(
-                    phone_row, "Copy phone",
-                    lambda phone=info["phone"]: self._copy_to_clipboard(phone),
+                    action_row, "Copy phone",
+                    lambda phone=phone: self._copy_to_clipboard(phone),
                     WHITE, GREEN,
-                ).pack(side="left", padx=(8, 0))
+                ).grid(row=0, column=1, sticky="e", padx=(8, 0))
+                action_col = 2
 
-            if info.get("sms_template"):
-                sms_row = tk.Frame(handoff, bg="#E7F4EC")
-                sms_row.pack(fill="x")
-                tk.Label(sms_row, text="SMS message:", bg="#E7F4EC", fg=GRAY,
-                         font=("Segoe UI", 9, "bold")).pack(side="left")
+            if sms_template:
                 self._make_btn(
-                    sms_row, "Copy message",
-                    lambda text=info["sms_template"]: self._copy_to_clipboard(text),
+                    action_row, "Copy message",
+                    lambda text=sms_template: self._copy_to_clipboard(text),
                     WHITE, GREEN,
-                ).pack(side="left", padx=(8, 0))
-
-                sms_box = self._make_text_box(handoff, height=5, readonly=False,
-                                              font=("Segoe UI", 9))
-                sms_box.insert("1.0", info["sms_template"])
-                sms_box.config(state="disabled")
-                sms_box.pack(fill="x", pady=(4, 0))
-                self._bind_text_widget_scroll(sms_box, self._detail_canvas)
+                ).grid(row=0, column=action_col, sticky="e", padx=(8, 0))
 
     def _update_ad_button(self):
         if not self._ad_btn:
@@ -1795,6 +2139,10 @@ class MainWindow(tk.Toplevel):
         self._status.set("Copied to clipboard.")
 
     @staticmethod
+    def _dedupe_repeated_country_code(phone: str) -> str:
+        return re.sub(r"^(\+\d{1,3})(?:[\s-]*\1)+", r"\1", str(phone or "").strip())
+
+    @staticmethod
     def _make_btn(parent, text, cmd, fg, bg, width: int | None = None):
         return tk.Button(parent, text=text, command=cmd, bg=bg, fg=fg,
                          relief="flat", bd=0, font=("Segoe UI", 9),
@@ -1823,6 +2171,38 @@ class MainWindow(tk.Toplevel):
         )
         if readonly:
             box.config(state="disabled")
+        return box
+
+    @staticmethod
+    def _make_selectable_label(
+        parent,
+        text: str,
+        bg: str,
+        fg: str,
+        font=("Segoe UI", 9),
+        wrap: int = 0,
+    ) -> tk.Text:
+        box = tk.Text(
+            parent,
+            height=max(1, str(text or "").count("\n") + 1),
+            relief="flat",
+            bd=0,
+            font=font,
+            bg=bg,
+            fg=fg,
+            wrap="word",
+            padx=0,
+            pady=0,
+            cursor="xterm",
+            insertwidth=0,
+            highlightthickness=0,
+            selectbackground="#B3D4FC",
+            selectforeground=TEXT,
+        )
+        if wrap:
+            box.configure(width=max(20, wrap // 7))
+        box.insert("1.0", text or "")
+        box.config(state="disabled")
         return box
 
     @staticmethod

@@ -211,6 +211,19 @@ class TaskStorage:
     def ad_setup_done(self, ticket_id: str) -> bool:
         return bool(self.get_ad_setup(ticket_id).get("completed_at"))
 
+    # Leaver action summaries
+
+    def get_leaver_action(self, ticket_id: str, action: str) -> dict:
+        raw = self._data.get(f"__leaver_{action}_{ticket_id}", {})
+        return raw if isinstance(raw, dict) else {}
+
+    def mark_leaver_action(self, ticket_id: str, action: str, info: dict) -> None:
+        self._data[f"__leaver_{action}_{ticket_id}"] = info
+        _save(TASKS_FILE, self._data)
+
+    def leaver_action_done(self, ticket_id: str, action: str) -> bool:
+        return bool(self.get_leaver_action(ticket_id, action).get("completed_at"))
+
     # ── Per-ticket daily notification dedup ───────────────────────────────────
 
     def notified_today(self, ticket_id: str) -> bool:

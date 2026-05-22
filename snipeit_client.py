@@ -93,6 +93,21 @@ class SnipeITClient:
         matches.sort(key=_score, reverse=True)
         return matches[0]
 
+    def find_exact_user(self, first_name: str, last_name: str) -> dict | None:
+        """Return a Snipe-IT user only when first and last name both match exactly."""
+        wanted_first = self._fold(first_name)
+        wanted_last = self._fold(last_name)
+        if not wanted_first or not wanted_last:
+            return None
+        user = self.find_user(first_name, last_name)
+        if not user:
+            return None
+        first = self._fold(user.get("first_name", ""))
+        last = self._fold(user.get("last_name", ""))
+        if first == wanted_first and last == wanted_last:
+            return user
+        return None
+
     def get_user_details(self, user_id: int) -> dict:
         r = self.session.get(f"{self.base}/api/v1/users/{user_id}", timeout=15)
         r.raise_for_status()
@@ -103,6 +118,67 @@ class SnipeITClient:
         r = self.session.get(f"{self.base}/api/v1/users/{user_id}/assets", timeout=15)
         r.raise_for_status()
         return r.json().get("rows", [])
+
+    def _find_exact_named_row(self, endpoint: str, name: str) -> dict:
+        """Return the Snipe-IT row with an exact name match."""
+        wanted = self._fold(name)
+        r = self.session.get(
+            f"{self.base}/api/v1/{endpoint}",
+            params={"search": name, "limit": 100, "sort": "name", "order": "asc"},
+            timeout=15,
+        )
+        r.raise_for_status()
+        rows = r.json().get("rows", [])
+        for row in rows:
+            if self._fold(row.get("name", "")) == wanted:
+                return row
+        available = ", ".join(row.get("name", "") for row in rows[:10] if row.get("name"))
+        raise ValueError(
+            f"Snipe-IT {endpoint} entry not found: {name}"
+            + (f". Search returned: {available}" if available else "")
+        )
+
+    def _get_checkin_status_id(self) -> int:
+        """Return the exact 'Storage' status label ID."""
+        return int(self._find_exact_named_row("statuslabels", "Storage")["id"])
+
+    def _get_checkin_location_id(self) -> int:
+        """Return the exact Girteka Park location ID."""
+        return int(self._find_exact_named_row("locations", "Girteka Park (Laisves 36)")["id"])
+
+    def checkin_asset(self, asset_id: int, status_id: int, location_id: int) -> dict:
+        """Check a single hardware asset back into Snipe-IT."""
+        r = self.session.post(
+            f"{self.base}/api/v1/hardware/{asset_id}/checkin",
+            json={"status_id": status_id, "location_id": location_id},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if str(data.get("status", "")).casefold() == "error":
+            raise ValueError(data.get("messages") or f"Asset {asset_id} check-in failed.")
+        return data
+
+    def checkin_all_user_assets(self, first_name: str, last_name: str) -> dict:
+        """Find a user and check in all hardware assets currently assigned to them."""
+        user = self.find_user(first_name, last_name)
+        if not user:
+            raise ValueError(f"Snipe-IT user not found: {first_name} {last_name}".strip())
+
+        assets = self.get_user_assets(user["id"])
+        if not assets:
+            return {"user": user, "checked_in": [], "count": 0}
+
+        status_id = self._get_checkin_status_id()
+        location_id = self._get_checkin_location_id()
+        checked_in = []
+        for asset in assets:
+            asset_id = asset.get("id")
+            if not asset_id:
+                continue
+            self.checkin_asset(int(asset_id), status_id, location_id)
+            checked_in.append(asset)
+        return {"user": user, "checked_in": checked_in, "count": len(checked_in)}
 
     def get_laptop(self, user_id: int) -> dict | None:
         """
