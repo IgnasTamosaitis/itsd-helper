@@ -849,7 +849,8 @@ class ADSetupWindow(tk.Toplevel):
 
     def _copy_script(self):
         try:
-            self._copy_sensitive(self._build_script())
+            script = self._script_box.get("1.0", "end-1c").strip()
+            self._copy_sensitive(script or self._build_script())
         except ValueError as e:
             messagebox.showwarning("Missing info", str(e), parent=self)
 
@@ -862,7 +863,9 @@ class ADSetupWindow(tk.Toplevel):
 
     def _run_script(self):
         try:
-            script = self._build_script()
+            script = self._script_box.get("1.0", "end-1c").strip()
+            if not script:
+                script = self._build_script()
         except ValueError as e:
             messagebox.showwarning("Missing info", str(e), parent=self)
             return

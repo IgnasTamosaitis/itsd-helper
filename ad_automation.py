@@ -437,11 +437,13 @@ def _parse_account_search_output(out: str) -> list[dict]:
         if len(parts) < 4:
             continue
         username = parts[0].strip()
-        key = username.casefold()
+        dn = parts[3].strip()
+        if "\\0ACNF:" in dn or "CNF:" in dn:
+            continue
+        key = f"{username}|{dn}".casefold()
         if key in seen:
             continue
         seen.add(key)
-        dn = parts[3].strip()
         enabled = parts[1].strip() == "True"
         results.append({
             "username":    username,
@@ -781,6 +783,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     We fill the rest: email, location, extensionAttribute10/14, groups, password.
     """
     sf_sam  = _e(sf_account["username"])
+    sf_identity = _e(sf_account.get("dn") or sf_account["username"])
     old_sam = _e(old_account["username"])
     address = detect_company_address(ticket.get("company_name", ""))
     ea14    = _e((ext_attrs or {}).get("extensionAttribute14", ""))
@@ -797,7 +800,8 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         f'Write-Host "Processing REJOINER (dual account): restoring {old_account["username"]}"',
         "",
         "# Read all new employment data from SF dummy",
-        f"$sf = Get-ADUser -Identity '{sf_sam}' -Properties EmployeeID,Title,Description,Department,Company,Manager,extensionAttribute5",
+        f"$sfDN = '{sf_identity}'",
+        "$sf = Get-ADUser -Identity $sfDN -Properties EmployeeID,Title,Description,Department,Company,Manager,extensionAttribute5",
         'Write-Host "SF data loaded — EmpID: $($sf.EmployeeID)  Title: $($sf.Title)"',
         "",
         "# Resolve manager email from SF dummy manager DN",
@@ -903,7 +907,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
 
     L += [
         "# !! DELETE SF DUMMY ACCOUNT - verify above output before this runs !!",
-        f"Remove-ADUser -Identity '{sf_sam}' -Confirm:$false",
+        "Remove-ADUser -Identity $sfDN -Confirm:$false",
         'Write-Host "OK  SF dummy account deleted"',
     ]
     return "\n".join(L)

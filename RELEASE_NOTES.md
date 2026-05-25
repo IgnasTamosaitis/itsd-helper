@@ -2,6 +2,24 @@
 
 ---
 
+## v1.2.5 - AD Rejoiner Conflict Fixes
+
+This release fixes the AD Setup rejoiner-dual flow when SuccessFactors dummy accounts have AD conflict duplicates.
+
+---
+
+### AD Setup fixes
+
+- Rejoiner-dual scripts now use the SF dummy account Distinguished Name, avoiding ambiguous `SamAccountName` lookups when AD contains `CNF` conflict objects
+- The AD account search parser now ignores `CNF` conflict objects instead of hiding the real account behind a duplicate username
+- **Apply changes** and **Copy review** now use the script currently visible in the review box, so manual review edits are respected
+
+### Included since v1.2.4
+
+- Added leaver offboarding and Snipe-IT asset panels
+
+---
+
 ## v1.2.2 - AD Setup Safeguards and Leaver Cleanup
 
 This release improves repeatable AD onboarding work, adds stronger safeguards around group assignment, and cleans up the leaver workflow and return-act output.
