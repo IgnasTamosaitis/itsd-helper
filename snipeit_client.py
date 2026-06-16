@@ -1,6 +1,6 @@
 """
 Snipe-IT inventory client.
-Used to look up the laptop assigned to a leaver (model + serial number).
+Used to look up assets assigned to a leaver.
 """
 import unicodedata
 
@@ -8,6 +8,25 @@ import requests
 
 # Keywords used to identify a laptop asset by category or model name
 _LAPTOP_CATEGORY_KW = {"laptop", "notebook", "kompiuter", "nešiojam", "computer", "portable"}
+
+# Keywords used to identify a SIM card asset
+_SIM_CATEGORY_KW = {"sim", "sim card", "simcard", "gsm", "mobile sim"}
+
+
+def is_sim_asset(asset: dict) -> bool:
+    """Return True if the asset looks like a SIM card based on its category name."""
+    cat = (asset.get("category") or {}).get("name", "").lower()
+    return any(k in cat for k in _SIM_CATEGORY_KW)
+
+
+def is_laptop_asset(asset: dict) -> bool:
+    """Return True if the asset looks like a laptop/computer."""
+    cat   = (asset.get("category") or {}).get("name", "").lower()
+    model = (asset.get("model")    or {}).get("name", "").lower()
+    return (
+        any(k in cat   for k in _LAPTOP_CATEGORY_KW) or
+        any(k in model for k in _LAPTOP_MODEL_KW)
+    )
 _LAPTOP_MODEL_KW = {
     "probook", "elitebook", "zbook", "dragonfly",
     "thinkpad", "thinkbook", "ideapad",
@@ -142,9 +161,13 @@ class SnipeITClient:
         """Return the exact 'Storage' status label ID."""
         return int(self._find_exact_named_row("statuslabels", "Storage")["id"])
 
-    def _get_checkin_location_id(self) -> int:
-        """Return the exact Girteka Park location ID."""
-        return int(self._find_exact_named_row("locations", "Girteka Park (Laisves 36)")["id"])
+    _DEFAULT_CHECKIN_LOCATION = "Girteka Park (Laisves 36)"
+
+    def _get_checkin_location_id(self, location_name: str = "") -> int:
+        """Return the location ID for the given Snipe-IT location name."""
+        return int(self._find_exact_named_row(
+            "locations", location_name or self._DEFAULT_CHECKIN_LOCATION
+        )["id"])
 
     def checkin_asset(self, asset_id: int, status_id: int, location_id: int) -> dict:
         """Check a single hardware asset back into Snipe-IT."""
@@ -159,26 +182,55 @@ class SnipeITClient:
             raise ValueError(data.get("messages") or f"Asset {asset_id} check-in failed.")
         return data
 
-    def checkin_all_user_assets(self, first_name: str, last_name: str) -> dict:
-        """Find a user and check in all hardware assets currently assigned to them."""
+    def delete_asset(self, asset_id: int) -> None:
+        """Permanently delete a hardware asset from Snipe-IT."""
+        r = self.session.delete(f"{self.base}/api/v1/hardware/{asset_id}", timeout=20)
+        r.raise_for_status()
+        data = r.json()
+        if str(data.get("status", "")).casefold() == "error":
+            raise ValueError(data.get("messages") or f"Asset {asset_id} delete failed.")
+
+    def _get_archive_status_id(self) -> int:
+        """Return the exact 'Archived' status label ID."""
+        return int(self._find_exact_named_row("statuslabels", "Archived")["id"])
+
+    def archive_asset(self, asset_id: int) -> None:
+        """Set a hardware asset's status to Archived in Snipe-IT."""
+        archive_status_id = self._get_archive_status_id()
+        r = self.session.patch(
+            f"{self.base}/api/v1/hardware/{asset_id}",
+            json={"status_id": archive_status_id},
+            timeout=20,
+        )
+        r.raise_for_status()
+        data = r.json()
+        if str(data.get("status", "")).casefold() == "error":
+            raise ValueError(data.get("messages") or f"Asset {asset_id} archive failed.")
+
+    def checkin_all_user_assets(self, first_name: str, last_name: str,
+                                location_name: str = "") -> dict:
+        """Find a user, check in all hardware assets, and delete any SIM assets."""
         user = self.find_user(first_name, last_name)
         if not user:
             raise ValueError(f"Snipe-IT user not found: {first_name} {last_name}".strip())
 
         assets = self.get_user_assets(user["id"])
         if not assets:
-            return {"user": user, "checked_in": [], "count": 0}
+            return {"user": user, "checked_in": [], "deleted": [], "count": 0}
 
         status_id = self._get_checkin_status_id()
-        location_id = self._get_checkin_location_id()
-        checked_in = []
+        location_id = self._get_checkin_location_id(location_name)
+        checked_in, deleted = [], []
         for asset in assets:
             asset_id = asset.get("id")
             if not asset_id:
                 continue
             self.checkin_asset(int(asset_id), status_id, location_id)
             checked_in.append(asset)
-        return {"user": user, "checked_in": checked_in, "count": len(checked_in)}
+            if is_sim_asset(asset):
+                self.delete_asset(int(asset_id))
+                deleted.append(asset)
+        return {"user": user, "checked_in": checked_in, "deleted": deleted, "count": len(checked_in)}
 
     def get_laptop(self, user_id: int) -> dict | None:
         """

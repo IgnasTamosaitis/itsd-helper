@@ -47,33 +47,54 @@ _BUDDY_VALUE = rf'({_NAME}|{_SAM})'
 
 _BUDDY_PATTERNS = [
     # "existing employee: X", "reference employee - X"
-    rf'(?:existing|reference|template)\s+employee\s*[:\-]\s*{_BUDDY_VALUE}',
+    rf"(?:existing|reference|template)\s+employee\s*[:\-]\s*{_BUDDY_VALUE}",
+    # "name of existing employee with similar access rights - X"
+    rf"(?:name\s+of\s+)?(?:existing|reference)\s+employee\s+with\s+(?:similar\s+)?[^.\n]{{0,60}}[:\-–]\s*{_BUDDY_VALUE}",
+    # "similar access rights - X", "similar access rights: X"
+    rf"similar\s+access\s+rights?\s*[:\-–]\s*{_BUDDY_VALUE}",
+    # "similar rights - X", "similar permissions - X"
+    rf"similar\s+(?:rights?|permissions?|accesses?)\s*[:\-–]\s*{_BUDDY_VALUE}",
+    # "access rights - X" (general dash/colon separator)
+    rf"access\s+rights?\s*[:\-–]\s*{_BUDDY_VALUE}",
+    # "employee with similar access/rights - X"
+    rf"employee\s+with\s+similar\s+[^.\n]{{0,40}}[:\-–]\s*{_BUDDY_VALUE}",
     # "rights as X", "access as X", "rights like X"
-    rf'(?:rights?|access(?:es)?)\s+(?:as|like)\s+{_BUDDY_VALUE}',
+    rf"(?:rights?|access(?:es)?)\s+(?:as|like)\s+{_BUDDY_VALUE}",
     # "rights same as for X", "accesses same as for X"
-    rf'(?:rights?|access(?:es?)?)\s+(?:the\s+)?same\s+as\s+(?:for\s+)?{_BUDDY_VALUE}',
-    rf'same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+for\s+{_BUDDY_VALUE}',
+    rf"(?:rights?|access(?:es?)?)\s+(?:the\s+)?same\s+as\s+(?:for\s+)?{_BUDDY_VALUE}",
+    rf"same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+for\s+{_BUDDY_VALUE}",
     # "use X as similar accesses", "use X as template", "use X as a base"
-    rf'use\s+{_BUDDY_VALUE}\s+as\b',
-    # "use X's access rights", "X's access rights as reference"
-    rf'use\s+{_BUDDY_VALUE}(?:\'|’)?s?\s+(?:rights?|access(?:es?)?)',
-    rf'{_BUDDY_VALUE}(?:\'|’)?s?\s+(?:rights?|access(?:es?)?)\s+as\s+(?:a\s+)?(?:reference|template)',
+    rf"use\s+{_BUDDY_VALUE}\s+as\b",
+    # "use X’s access rights", "X’s access rights as reference"
+    rf"use\s+{_BUDDY_VALUE}(?:’|’)?s?\s+(?:rights?|access(?:es?)?)",
+    rf"{_BUDDY_VALUE}(?:’|’)?s?\s+(?:rights?|access(?:es?)?)\s+as\s+(?:a\s+)?(?:reference|template)",
     # "the person X", "person is X", "person who is working in the similar job role – X"
-    rf'(?:the\s+)?person\s+(?:is\s+)?{_BUDDY_VALUE}',
-    rf'person\s+who\s+.{{0,60}}[–\-]\s*{_BUDDY_VALUE}',
+    rf"(?:the\s+)?person\s+(?:is\s+)?{_BUDDY_VALUE}",
+    rf"person\s+who\s+.{{0,60}}[–\-]\s*{_BUDDY_VALUE}",
     # "similar job role – X", "similar role – X"
-    rf'similar\s+(?:\w+\s+)?(?:job\s+)?role\s*[–\-]\s*{_BUDDY_VALUE}',
+    rf"similar\s+(?:\w+\s+)?(?:job\s+)?role\s*[–\-]\s*{_BUDDY_VALUE}",
     # "it will be X", "will be X"
-    rf'will\s+be\s+{_BUDDY_VALUE}',
-    rf'copy\s+(?:rights?\s+)?from\s+{_BUDDY_VALUE}',
-    rf'buddy\s*(?:is|:)\s*{_BUDDY_VALUE}',
-    rf'{_BUDDY_VALUE}\s+(?:is\s+)?(?:a\s+|the\s+)?buddy',
-    rf'similar\s+(?:rights?\s+|access(?:es?)?\s+)?(?:to|as)\s+{_BUDDY_VALUE}',
-    rf'same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+{_BUDDY_VALUE}',
-    rf'template\s*(?:is|:)\s*{_BUDDY_VALUE}',
-    rf'copy\s+{_BUDDY_VALUE}(?:\'s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)',
-    rf'based\s+on\s+{_BUDDY_VALUE}',
-    rf'like\s+{_BUDDY_VALUE}(?:\'s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)',
+    rf"will\s+be\s+{_BUDDY_VALUE}",
+    rf"copy\s+(?:rights?\s+)?from\s+{_BUDDY_VALUE}",
+    rf"buddy\s*(?:is|:|[\-–])\s*{_BUDDY_VALUE}",
+    rf"{_BUDDY_VALUE}\s+(?:is\s+)?(?:a\s+|the\s+)?buddy",
+    rf"similar\s+(?:rights?\s+|access(?:es?)?\s+)?(?:to|as)\s+{_BUDDY_VALUE}",
+    rf"same\s+(?:rights?\s+|access(?:es?)?\s+)?as\s+{_BUDDY_VALUE}",
+    rf"template\s*(?:is|:|[\-–])\s*{_BUDDY_VALUE}",
+    rf"template\s+user\s*[:\-–]\s*{_BUDDY_VALUE}",
+    rf"copy\s+{_BUDDY_VALUE}(?:’s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)",
+    rf"based\s+on\s+{_BUDDY_VALUE}",
+    rf"like\s+{_BUDDY_VALUE}(?:’s)?\s+(?:rights?|access(?:es?)?|groups?|permissions?)",
+    # "access like X", "access as X"
+    rf"access(?:es?)?\s+(?:like|as)\s+{_BUDDY_VALUE}",
+    # "same access as X", "same rights as X", "same permissions as X"
+    rf"same\s+(?:access(?:es?)?|rights?|permissions?)\s+as\s+{_BUDDY_VALUE}",
+    # "give/set/assign same/similar access as X"
+    rf"(?:give|set|assign|grant)\s+(?:same|similar)\s+(?:rights?|access(?:es?)?|permissions?)\s+as\s+{_BUDDY_VALUE}",
+    # "access as per X"
+    rf"access\s+as\s+per\s+{_BUDDY_VALUE}",
+    # "X - for reference", "X - as template" (name comes first, role second)
+    rf"{_BUDDY_VALUE}\s*[:\-–]\s*(?:for\s+)?(?:reference|template|similar\s+(?:access|rights?))",
 ]
 
 

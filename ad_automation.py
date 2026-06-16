@@ -152,7 +152,7 @@ def detect_location(office: str, company: str = "") -> str:
     text = (office + " " + company).lower()
     if any(k in text for k in ["poland", "warszawa", "warsaw", "krakow", "wroclaw"]):
         return "poland"
-    if any(k in text for k in ["georgia", "gbs", "tbilisi", "kutaisi"]):
+    if any(k in text for k in ["georgia", "gbs", "tbilisi", "kutaisi", "business services"]):
         return "georgia"
     return "lithuania"
 
@@ -184,8 +184,24 @@ _LAISVES_KEYWORDS = [
     "gcc", "tndm", "girteka", "me trailer", "classtrucks",
 ]
 
+_GBS_ADDRESS = {
+    "street":  "Ilia Chavchavadze Ave. 37L",
+    "city":    "Tbilisi",
+    "zip":     "",
+    "country": "GE",
+    "office":  "Tbilisi",
+    "ext15":   "",
+}
+
+_GBS_KEYWORDS = [
+    "business services",
+]
+
 def detect_company_address(company: str) -> dict:
     c = company.lower()
+    # GBS must be checked before the generic "girteka" keyword
+    if any(k in c for k in _GBS_KEYWORDS):
+        return _GBS_ADDRESS
     if any(k in c for k in _LAISVES_KEYWORDS):
         return _LAISVES_ADDRESS
     return {}

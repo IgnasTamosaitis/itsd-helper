@@ -8,8 +8,9 @@ from datetime import date, datetime
 import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
-from leaver_document import generate_leaver_return_document
+from leaver_document import generate_leaver_return_document, generate_gbs_leaver_return_document
 from ad_automation import find_user_accounts, classify_scenario, offboard_leaver_account
+from snipeit_client import is_sim_asset, is_laptop_asset
 
 TASKS = [
     "Active Directory account setup",
@@ -88,9 +89,9 @@ class MainWindow(tk.Toplevel):
         self._leaver_comments_cache: dict = {}
         self._leaver_comment_box: tk.Text | None = None
         self._leaver_comment_ticket_id: str | None = None
-        self._leaver_laptop_frame: tk.Frame | None = None
-        self._leaver_laptop_fetch_for: str = ""   # ticket_id of in-flight fetch
-        self._leaver_laptop_info: dict | None = None
+        self._leaver_assets_frame: tk.Frame | None = None
+        self._leaver_assets_fetch_for: str = ""
+        self._leaver_assets_info: list[dict] = []
 
         self.title("ITSD Jira Helper")
         self.geometry("980x620")
@@ -456,37 +457,48 @@ class MainWindow(tk.Toplevel):
         tk.Label(self._leaver_detail, text=t["key"], bg=BG, fg=GRAY,
                  font=("Segoe UI", 8)).pack(anchor="w", padx=24, pady=(0, 10))
 
-        action_row = tk.Frame(self._leaver_detail, bg=BG)
-        action_row.pack(anchor="w", padx=24, pady=(0, 10))
-        self._leaver_ad_offboard_btn = self._make_btn(
-            action_row, "Disable AD + 3CX",
-            self._leaver_disable_ad_and_3cx,
-            WHITE, RED, width=ACTION_BTN_WIDTH,
-        )
-        self._leaver_ad_offboard_btn.pack(side="left")
-        self._leaver_snipe_checkin_btn = self._make_btn(
-            action_row, "Check in Snipe-IT",
-            self._leaver_checkin_snipe_assets,
-            WHITE, ACCENT, width=ACTION_BTN_WIDTH,
-        )
-        self._leaver_snipe_checkin_btn.pack(side="left", padx=(8, 0))
+        action_card = tk.Frame(self._leaver_detail, bg="#E7F4EC",
+                               highlightbackground="#B8E0C7", highlightthickness=1)
+        action_card.pack(fill="x", padx=24, pady=(0, 8))
 
-        # Laptop card (auto-fetched from Snipe-IT)
-        self._leaver_laptop_frame = tk.Frame(
+        ad_row = tk.Frame(action_card, bg="#E7F4EC")
+        ad_row.pack(fill="x", padx=10, pady=(8, 4))
+        tk.Label(ad_row, text="Remove AD groups, disable account, clear 3CX",
+                 bg="#E7F4EC", fg=GRAY, font=("Segoe UI", 9)).pack(side="left")
+        self._leaver_ad_offboard_btn = self._make_btn(
+            ad_row, "Disable AD + 3CX",
+            self._leaver_disable_ad_and_3cx,
+            WHITE, RED,
+        )
+        self._leaver_ad_offboard_btn.pack(side="right")
+
+        snipe_row = tk.Frame(action_card, bg="#E7F4EC")
+        snipe_row.pack(fill="x", padx=10, pady=(0, 8))
+        tk.Label(snipe_row, text="Check in all assets to Storage, delete SIM cards",
+                 bg="#E7F4EC", fg=GRAY, font=("Segoe UI", 9)).pack(side="left")
+        self._leaver_snipe_checkin_btn = self._make_btn(
+            snipe_row, "Check in Snipe-IT",
+            self._leaver_checkin_snipe_assets,
+            WHITE, ACCENT,
+        )
+        self._leaver_snipe_checkin_btn.pack(side="right")
+
+        # Assets card (auto-fetched from Snipe-IT)
+        self._leaver_assets_frame = tk.Frame(
             self._leaver_detail, bg=SOFT_BLUE,
             highlightbackground=ACCENT, highlightthickness=1)
-        self._leaver_laptop_frame.pack(fill="x", padx=24, pady=(0, 10))
-        self._leaver_laptop_info = None
-        self._leaver_laptop_fetch_for = t["id"]
-        self._draw_laptop_card_loading()
+        self._leaver_assets_frame.pack(fill="x", padx=24, pady=(0, 10))
+        self._leaver_assets_info = []
+        self._leaver_assets_fetch_for = t["id"]
+        self._draw_assets_card_loading()
         if self._snipeit:
             threading.Thread(
-                target=self._leaver_fetch_laptop,
+                target=self._leaver_fetch_assets,
                 args=(t,),
                 daemon=True,
             ).start()
         else:
-            self._draw_laptop_card_no_snipeit()
+            self._draw_assets_card_no_snipeit()
 
         tk.Frame(self._leaver_detail, bg=BORDER, height=1).pack(fill="x", padx=24, pady=(0, 10))
 
@@ -559,80 +571,197 @@ class MainWindow(tk.Toplevel):
                 continue
             self._bind_leaver_detail_scroll(child)
 
-    # ── Laptop card ───────────────────────────────────────────────────────────
+    # ── Assets card ───────────────────────────────────────────────────────────
 
-    def _draw_laptop_card_loading(self):
-        f = self._leaver_laptop_frame
+    @staticmethod
+    def _leaver_snipe_location(ticket: dict) -> str:
+        """Return the Snipe-IT check-in location name for this leaver ticket."""
+        company = ticket.get("company", "").lower()
+        summary = ticket.get("summary", "").lower()
+        if "business services" in company or re.search(r"\bgbs\b", summary):
+            return "GBS Hub"
+        return "Girteka Park (Laisves 36)"
+
+    def _draw_assets_card_loading(self):
+        f = self._leaver_assets_frame
         for w in f.winfo_children(): w.destroy()
         f.configure(bg=SOFT_BLUE, highlightbackground=ACCENT)
-        tk.Label(f, text="Laptop (Snipe-IT)", bg=SOFT_BLUE, fg=ACCENT,
+        tk.Label(f, text="Assets (Snipe-IT)", bg=SOFT_BLUE, fg=ACCENT,
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
         tk.Label(f, text="Searching inventory...", bg=SOFT_BLUE, fg=GRAY,
                  font=("Segoe UI", 9, "italic")).pack(anchor="w", padx=10, pady=(2, 8))
 
-    def _draw_laptop_card_no_snipeit(self):
-        f = self._leaver_laptop_frame
+    def _draw_assets_card_no_snipeit(self):
+        f = self._leaver_assets_frame
         for w in f.winfo_children(): w.destroy()
         f.configure(bg="#FFF4E5", highlightbackground="#FF991F")
-        tk.Label(f, text="Laptop (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
+        tk.Label(f, text="Assets (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
                  font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        tk.Label(f, text="Add Snipe-IT credentials in Settings to auto-fetch laptop details.",
+        tk.Label(f, text="Add Snipe-IT credentials in Settings to auto-fetch assets.",
                  bg="#FFF4E5", fg="#B76E00",
                  font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(2, 8))
 
-    def _draw_laptop_card_found(self, laptop: dict):
-        f = self._leaver_laptop_frame
+    def _draw_assets_card_not_found(self):
+        f = self._leaver_assets_frame
+        for w in f.winfo_children(): w.destroy()
+        f.configure(bg="#FFF4E5", highlightbackground="#FF991F")
+        tk.Label(f, text="Assets (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(f, text="No assets found in inventory for this person.",
+                 bg="#FFF4E5", fg="#B76E00",
+                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(2, 8))
+
+    def _draw_assets_card(self, assets: list[dict], ticket: dict):
+        f = self._leaver_assets_frame
         for w in f.winfo_children(): w.destroy()
         f.configure(bg="#E7F4EC", highlightbackground="#B8E0C7")
-        tk.Label(f, text="Laptop (Snipe-IT)", bg="#E7F4EC", fg=GREEN,
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
+        tk.Label(f, text=f"Assets (Snipe-IT)  —  {len(assets)} found",
+                 bg="#E7F4EC", fg=GREEN,
+                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 6))
 
-        info_row = tk.Frame(f, bg="#E7F4EC")
-        info_row.pack(fill="x", padx=10, pady=(2, 8))
-        tk.Label(info_row, text=f"Model:  {laptop['model']}", bg="#E7F4EC", fg=TEXT,
-                 font=("Segoe UI", 10, "bold")).pack(anchor="w")
-        tk.Label(info_row, text=f"SN:       {laptop['serial']}", bg="#E7F4EC", fg=TEXT,
-                 font=("Segoe UI", 10)).pack(anchor="w")
+        location_name = self._leaver_snipe_location(ticket)
 
-    def _draw_laptop_card_not_found(self):
-        f = self._leaver_laptop_frame
-        for w in f.winfo_children(): w.destroy()
-        f.configure(bg="#FFF4E5", highlightbackground="#FF991F")
-        tk.Label(f, text="Laptop (Snipe-IT)", bg="#FFF4E5", fg="#B76E00",
-                 font=("Segoe UI", 9, "bold")).pack(anchor="w", padx=10, pady=(8, 0))
-        tk.Label(f, text="No laptop found in inventory for this person.",
-                 bg="#FFF4E5", fg="#B76E00",
-                 font=("Segoe UI", 9)).pack(anchor="w", padx=10, pady=(2, 8))
+        for asset in assets:
+            asset_id = asset.get("id")
+            category = (asset.get("category") or {}).get("name", "")
+            model    = (asset.get("model")    or {}).get("name", "")
+            serial   = asset.get("serial", "")
+            sim      = is_sim_asset(asset)
+            laptop   = is_laptop_asset(asset)
 
-    def _leaver_fetch_laptop(self, t: dict):
-        """Background: search Snipe-IT for the leaver's laptop and update the card."""
+            row = tk.Frame(f, bg="#E7F4EC")
+            row.pack(fill="x", padx=10, pady=(0, 6))
+
+            left = tk.Frame(row, bg="#E7F4EC")
+            left.pack(side="left", fill="x", expand=True)
+            label_top = category if category else model
+            label_sub = model if category else ""
+            tk.Label(left, text=label_top, bg="#E7F4EC", fg=TEXT,
+                     font=("Segoe UI", 9, "bold"), anchor="w").pack(anchor="w")
+            if label_sub:
+                tk.Label(left, text=label_sub, bg="#E7F4EC", fg=GRAY,
+                         font=("Segoe UI", 9), anchor="w").pack(anchor="w")
+            if serial:
+                tk.Label(left, text=f"SN: {serial}", bg="#E7F4EC", fg=GRAY,
+                         font=("Segoe UI", 9), anchor="w").pack(anchor="w")
+
+            # Pack right-to-left: status first, then buttons (rightmost button packed last)
+            status_lbl = tk.Label(row, text="", bg="#E7F4EC", fg=GREEN,
+                                  font=("Segoe UI", 8, "bold"))
+            status_lbl.pack(side="right", padx=(6, 0))
+
+            if sim:
+                self._make_btn(
+                    row, "Check in + Delete",
+                    lambda aid=asset_id, sl=status_lbl, loc=location_name:
+                        self._do_checkin_and_delete(aid, sl, loc),
+                    WHITE, RED,
+                ).pack(side="right")
+            else:
+                self._make_btn(
+                    row, "Check in",
+                    lambda aid=asset_id, sl=status_lbl, loc=location_name:
+                        self._do_checkin_asset(aid, sl, loc),
+                    WHITE, ACCENT,
+                ).pack(side="right")
+                if laptop:
+                    self._make_btn(
+                        row, "Archive",
+                        lambda aid=asset_id, sl=status_lbl:
+                            self._do_archive_asset(aid, sl),
+                        WHITE, "#5243AA",
+                    ).pack(side="right", padx=(0, 4))
+
+        tk.Frame(f, bg="#E7F4EC", height=4).pack()
+
+    def _leaver_fetch_assets(self, t: dict):
+        """Background: fetch all Snipe-IT assets for the leaver and render the card."""
         ticket_id = t["id"]
         try:
             user = self._snipeit.find_user(t.get("first_name", ""), t.get("last_name", ""))
-            if not user:
-                laptop = None
-            else:
-                laptop = self._snipeit.get_laptop(user["id"])
+            assets = self._snipeit.get_user_assets(user["id"]) if user else []
         except Exception:
-            laptop = None
+            assets = []
 
         def _update():
-            if self._leaver_laptop_fetch_for != ticket_id:
-                return  # user switched tickets while fetching
-            self._leaver_laptop_info = laptop
-            if not self._leaver_laptop_frame:
+            if self._leaver_assets_fetch_for != ticket_id:
+                return
+            self._leaver_assets_info = assets
+            if not self._leaver_assets_frame:
                 return
             try:
-                if not self._leaver_laptop_frame.winfo_exists():
+                if not self._leaver_assets_frame.winfo_exists():
                     return
             except tk.TclError:
                 return
-            if laptop:
-                self._draw_laptop_card_found(laptop)
+            if assets:
+                self._draw_assets_card(assets, t)
             else:
-                self._draw_laptop_card_not_found()
+                self._draw_assets_card_not_found()
 
         self.after(0, _update)
+
+    def _do_checkin_asset(self, asset_id: int, status_lbl: tk.Label,
+                          location_name: str = ""):
+        """Check in a single asset to Storage in a background thread."""
+        status_lbl.config(text="Working...", fg=GRAY)
+        def _do():
+            try:
+                status_id = self._snipeit._get_checkin_status_id()
+                location_id = self._snipeit._get_checkin_location_id(location_name)
+                self._snipeit.checkin_asset(int(asset_id), status_id, location_id)
+                self.after(0, lambda: status_lbl.config(text="Checked in", fg=GREEN))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: status_lbl.config(text=f"Error: {err[:40]}", fg=RED))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _do_checkin_and_delete(self, asset_id: int, status_lbl: tk.Label,
+                               location_name: str = ""):
+        """Check in a SIM asset then permanently delete it."""
+        status_lbl.config(text="Working...", fg=GRAY)
+        def _do():
+            try:
+                status_id = self._snipeit._get_checkin_status_id()
+                location_id = self._snipeit._get_checkin_location_id(location_name)
+                self._snipeit.checkin_asset(int(asset_id), status_id, location_id)
+                self._snipeit.delete_asset(int(asset_id))
+                self.after(0, lambda: status_lbl.config(text="Checked in & deleted", fg=GREEN))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: status_lbl.config(text=f"Error: {err[:40]}", fg=RED))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _do_archive_asset(self, asset_id: int, status_lbl: tk.Label):
+        """Set a laptop asset's status to Archived (employee buyout)."""
+        status_lbl.config(text="Working...", fg=GRAY)
+        def _do():
+            try:
+                self._snipeit.archive_asset(int(asset_id))
+                self.after(0, lambda: status_lbl.config(text="Archived", fg="#5243AA"))
+            except Exception as e:
+                err = str(e)
+                self.after(0, lambda: status_lbl.config(text=f"Error: {err[:40]}", fg=RED))
+        threading.Thread(target=_do, daemon=True).start()
+
+    def _find_laptop_from_assets(self) -> dict | None:
+        """Return the best laptop dict from the cached assets list, or None."""
+        from snipeit_client import _LAPTOP_CATEGORY_KW, _LAPTOP_MODEL_KW
+        best, best_score = None, 0
+        for a in self._leaver_assets_info:
+            cat   = (a.get("category") or {}).get("name", "").lower()
+            model = (a.get("model")    or {}).get("name", "").lower()
+            score = 0
+            if any(k in cat   for k in _LAPTOP_CATEGORY_KW): score += 10
+            if any(k in model for k in _LAPTOP_MODEL_KW):    score += 5
+            if score > best_score:
+                best_score, best = score, a
+        if not best or best_score == 0:
+            return None
+        return {
+            "model":  (best.get("model")    or {}).get("name", ""),
+            "serial": best.get("serial", ""),
+        }
 
     @staticmethod
     def _build_laptop_comment_template(laptop: dict) -> str:
@@ -642,28 +771,20 @@ class MainWindow(tk.Toplevel):
             f"SN: {laptop['serial']}"
         )
 
-    def _fill_laptop_comment_template(self, laptop: dict):
-        """Pre-fill the comment text box with the laptop buyout template."""
-        if not self._leaver_comment_box:
-            return
-        template = self._build_laptop_comment_template(laptop)
-        self._leaver_comment_box.delete("1.0", "end")
-        self._leaver_comment_box.insert("1.0", template)
-        self._leaver_detail_canvas.yview_moveto(0.7)  # scroll down to comment area
-
     def _post_current_laptop_template(self):
         if self._leaver_sel is None or self._leaver_sel >= len(self.leaver_tickets):
             return
-        if not self._leaver_laptop_info:
+        laptop = self._find_laptop_from_assets()
+        if not laptop:
             messagebox.showinfo(
-                "Laptop not ready",
-                "Laptop details are not available yet. Wait for Snipe-IT to load or check whether a laptop was found.",
+                "Laptop not found",
+                "No laptop was found in Snipe-IT for this person. Wait for the inventory to load or check manually.",
                 parent=self,
             )
             return
 
         ticket = self.leaver_tickets[self._leaver_sel]
-        template = self._build_laptop_comment_template(self._leaver_laptop_info)
+        template = self._build_laptop_comment_template(laptop)
         if self._leaver_comment_box:
             self._leaver_comment_box.delete("1.0", "end")
             self._leaver_comment_box.insert("1.0", template)
@@ -828,7 +949,8 @@ class MainWindow(tk.Toplevel):
             return
         if not messagebox.askyesno(
             "Confirm Snipe-IT check-in",
-            f"Check in all Snipe-IT assets assigned to {ticket['name']}?",
+            f"Check in all Snipe-IT assets assigned to {ticket['name']}?\n\n"
+            "SIM card assets will be checked in and then permanently deleted.",
             parent=self,
         ):
             return
@@ -837,11 +959,14 @@ class MainWindow(tk.Toplevel):
             self._leaver_snipe_checkin_btn.config(state="disabled")
         self._leavers_status.set("Checking in Snipe-IT assets...")
 
+        location_name = self._leaver_snipe_location(ticket)
+
         def _do():
             try:
                 result = self._snipeit.checkin_all_user_assets(
                     ticket.get("first_name", ""),
                     ticket.get("last_name", ""),
+                    location_name=location_name,
                 )
                 self.storage.mark_leaver_action(ticket["id"], "snipe_checkin", {
                     "completed_at": datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -850,10 +975,12 @@ class MainWindow(tk.Toplevel):
                 })
 
                 def _ok():
-                    count = result.get("count", 0)
-                    self._leavers_status.set(
-                        f"Snipe-IT check-in completed: {count} asset(s)."
-                    )
+                    count   = result.get("count", 0)
+                    deleted = len(result.get("deleted", []))
+                    msg = f"Snipe-IT check-in completed: {count} asset(s)."
+                    if deleted:
+                        msg += f"  {deleted} SIM(s) deleted."
+                    self._leavers_status.set(msg)
                     if (self._leaver_sel is not None
                             and self._leaver_sel < len(self.leaver_tickets)
                             and self.leaver_tickets[self._leaver_sel]["id"] == ticket["id"]):
@@ -928,7 +1055,10 @@ class MainWindow(tk.Toplevel):
                         self.after(0, lambda: self._leavers_status.set("Return act cancelled."))
                         return
 
-                path, warnings = generate_leaver_return_document(ticket, self._snipeit)
+                is_gbs = bool(re.search(r"\bgbs\b", ticket.get("summary", "").lower())
+                              or "business services" in ticket.get("company", "").lower())
+                generator = generate_gbs_leaver_return_document if is_gbs else generate_leaver_return_document
+                path, warnings = generator(ticket, self._snipeit)
 
                 def _ok():
                     self._leavers_status.set(f"Return act generated for {ticket['key']}.")
@@ -2243,7 +2373,7 @@ class SetupDialog(tk.Toplevel):
         "api_token":             "",
         "jql":                   'assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)',
         "date_field":            "customfield_10980",
-        "leaver_jql":            'assignee = currentUser() AND (labels = leaver OR cf[11032] = "SF:offboarding" OR summary ~ "Leaver" OR summary ~ "offboarding") AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)',
+        "leaver_jql":            'project = ITHW AND assignee = currentUser() AND (cf[11032] = "SF:offboarding" OR labels = leaver) AND status not in (Done, Closed, Resolved, Declined, Cancelled, Rejected)',
         "snipeit_url":           "https://inventory.girteka.eu",
         "snipeit_token":         "",
         "remind_days_before":    "3",
@@ -2317,7 +2447,7 @@ class SetupDialog(tk.Toplevel):
             ("Start date field",       "date_field",             False,
              "customfield_10980  (do not change unless Jira schema changed)"),
             ("Leavers JQL",            "leaver_jql",             False,
-             'Filter for leaver tickets - label "leaver" in the ITHW project'),
+             'Filter for leaver/offboarding tickets in the ITHW project'),
             ("Snipe-IT URL",           "snipeit_url",            False,
              "https://inventory.girteka.eu"),
             ("Snipe-IT API Token",     "snipeit_token",          True,

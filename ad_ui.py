@@ -10,7 +10,7 @@ from datetime import datetime
 
 from ad_automation import (
     detect_location, detect_domain, build_email, DEFAULT_GROUPS,
-    generate_password, find_user_accounts, classify_scenario,
+    find_user_accounts, classify_scenario,
     get_buddy_info, get_account_groups, build_verification_script,
     build_new_joiner_script, build_rejoiner_dual_script,
     build_rejoiner_single_script, run_ps,
@@ -440,7 +440,7 @@ class ADSetupWindow(tk.Toplevel):
         # ── 7. Password ───────────────────────────────────────────────────────
         sec7 = self._section(body, "7. Password")
 
-        self._pwd_var = tk.StringVar(value=generate_password())
+        self._pwd_var = tk.StringVar(value="Welcome123")
         self._pwd_visible = False
         pwd_row = tk.Frame(sec7, bg=BG)
         pwd_row.pack(fill="x")
@@ -452,8 +452,6 @@ class ADSetupWindow(tk.Toplevel):
         self._show_btn = self._btn(pwd_row, "Show", self._toggle_pwd_visibility,
                                    bg="#DEEBFF", fg=ACCENT)
         self._show_btn.pack(side="left", padx=(0, 4))
-        self._btn(pwd_row, "Random", lambda: self._pwd_var.set(generate_password()),
-                  bg="#DEEBFF", fg=ACCENT).pack(side="left", padx=(0, 6))
         self._btn(pwd_row, "Copy", lambda: self._copy_sensitive(self._pwd_var.get()),
                   bg="#DEEBFF", fg=ACCENT).pack(side="left")
 
@@ -467,7 +465,6 @@ class ADSetupWindow(tk.Toplevel):
         self._sms_box.bind("<Button-1>", lambda e: self._copy_sms_sensitive())
         self._update_sms()
         self._username_var.trace_add("write", lambda *_: self._update_sms())
-        self._pwd_var.trace_add("write",      lambda *_: self._update_sms())
 
         # ── 8. Preview & run ──────────────────────────────────────────────────
         sec8 = self._section(body, "8. Review and apply")
@@ -784,18 +781,17 @@ class ADSetupWindow(tk.Toplevel):
     def _update_sms(self):
         phone    = self.ticket.get("phone", "N/A") or "N/A"
         username = self._username_var.get() or "(username)"
-        password = self._pwd_var.get()
-        msg = f"Click box to copy SMS template  (send to {phone})\n\n{self._sms_template(username, password)}"
+        msg = f"Click box to copy SMS template  (send to {phone})\n\n{self._sms_template(username)}"
         self._sms_box.config(state="normal")
         self._sms_box.delete("1.0", "end")
         self._sms_box.insert("1.0", msg)
         self._sms_box.config(state="disabled")
 
     @staticmethod
-    def _sms_template(username: str, password: str) -> str:
+    def _sms_template(username: str) -> str:
         return (
-            "Hello,\n\nYour username and password is:\n\n"
-            f"Username: {username}\nPassword: {password}\n\nHave a great day!"
+            "Hello,\n\nYour username is:\n\n"
+            f"Username: {username}\n\nHave a great day!"
         )
 
     # ── Script ────────────────────────────────────────────────────────────────
@@ -994,7 +990,6 @@ class ADSetupWindow(tk.Toplevel):
             "password": self._pwd_var.get().strip(),
             "sms_template": self._sms_template(
                 self._username_var.get().strip(),
-                self._pwd_var.get().strip(),
             ),
         }
         self.storage.mark_ad_setup(self.ticket["id"], info)
@@ -1029,8 +1024,7 @@ class ADSetupWindow(tk.Toplevel):
 
     def _copy_sms_sensitive(self):
         username = self._username_var.get()
-        password = self._pwd_var.get()
-        self._copy_sensitive(self._sms_template(username, password))
+        self._copy_sensitive(self._sms_template(username))
 
     def _write_audit_log(self, status: str, output: str):
         try:
