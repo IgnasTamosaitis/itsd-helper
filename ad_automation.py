@@ -150,7 +150,7 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
 
 def detect_location(office: str, company: str = "") -> str:
     text = (office + " " + company).lower()
-    if any(k in text for k in ["poland", "warszawa", "warsaw", "krakow", "wroclaw"]):
+    if any(k in text for k in ["poland", "warszawa", "warsaw", "krakow", "wroclaw", "poznan", "poznań", "girpoltrans"]):
         return "poland"
     if any(k in text for k in ["georgia", "gbs", "tbilisi", "kutaisi", "business services"]):
         return "georgia"
@@ -197,11 +197,26 @@ _GBS_KEYWORDS = [
     "business services",
 ]
 
+_POZNAN_ADDRESS = {
+    "street":  "Poznańska 4",
+    "city":    "Sady",
+    "zip":     "",
+    "country": "PL",
+    "office":  "Poznan",
+    "ext15":   "",
+}
+
+_POZNAN_KEYWORDS = [
+    "girpoltrans", "poznan", "poznań",
+]
+
 def detect_company_address(company: str) -> dict:
     c = company.lower()
     # GBS must be checked before the generic "girteka" keyword
     if any(k in c for k in _GBS_KEYWORDS):
         return _GBS_ADDRESS
+    if any(k in c for k in _POZNAN_KEYWORDS):
+        return _POZNAN_ADDRESS
     if any(k in c for k in _LAISVES_KEYWORDS):
         return _LAISVES_ADDRESS
     return {}

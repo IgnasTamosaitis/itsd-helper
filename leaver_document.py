@@ -9,9 +9,11 @@ from docx import Document
 
 _TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "leaver_return_template.docx"
 _GBS_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "leaver_gbs_template.docx"
+_POZNAN_TEMPLATE_PATH = Path(__file__).resolve().parent / "templates" / "leaver_poznan_template.docx"
 _OUTPUT_DIR = Path(__file__).resolve().parent / "generated_docs"
 _RECEIVER_ROLE = "IT engineer"
 _GBS_RECEIVER_ROLE = "Senior IT Engineer Service Desk"
+_POZNAN_RECEIVER_ROLE = "IT engineer"
 
 _ASSET_CATEGORY_ORDER = {
     "laptop": 0,
@@ -148,6 +150,49 @@ def _fill_gbs_asset_table(table, assets: list[dict]) -> None:
         else:
             for cell in cells:
                 cell.text = ""
+
+
+def generate_poznan_leaver_return_document(ticket: dict, snipeit=None) -> tuple[Path, list[str]]:
+    if not _POZNAN_TEMPLATE_PATH.exists():
+        raise FileNotFoundError(
+            f"Poznan template not found: {_POZNAN_TEMPLATE_PATH}\n"
+            "Place the Poznan return act template at that path to enable document generation."
+        )
+
+    warnings: list[str] = []
+    snipe_assets: list[dict] = []
+
+    if snipeit:
+        try:
+            user = snipeit.find_user(ticket.get("first_name", ""), ticket.get("last_name", ""))
+            if user:
+                snipe_assets = snipeit.get_user_assets(user["id"])
+                if not snipe_assets:
+                    warnings.append("No assigned Snipe-IT assets were found for this user.")
+            else:
+                warnings.append("Could not find this leaver in Snipe-IT.")
+        except Exception as exc:
+            warnings.append(f"Snipe-IT lookup failed: {exc}")
+    else:
+        warnings.append("Snipe-IT is not configured, so the asset list could not be filled.")
+
+    assets = sorted(snipe_assets, key=_asset_sort_key)
+
+    doc = Document(_POZNAN_TEMPLATE_PATH)
+
+    warnings.append(
+        "Poznan template paragraph indices have not been configured yet — "
+        "verify the generated document and update generate_poznan_leaver_return_document() "
+        "to match your template layout."
+    )
+
+    _fill_asset_table(doc.tables[0], assets)
+
+    _OUTPUT_DIR.mkdir(parents=True, exist_ok=True)
+    filename = f"{ticket.get('key', 'leaver')}_{_safe_filename(ticket.get('name', 'leaver'))}_return_act.docx"
+    output_path = _OUTPUT_DIR / filename
+    doc.save(output_path)
+    return output_path, warnings
 
 
 def generate_gbs_leaver_return_document(ticket: dict, snipeit=None) -> tuple[Path, list[str]]:

@@ -8,7 +8,9 @@ from datetime import date, datetime
 import unicodedata
 
 from jira_client import extract_buddies_from_comments, is_sam_account
-from leaver_document import generate_leaver_return_document, generate_gbs_leaver_return_document
+from leaver_document import (generate_leaver_return_document,
+                             generate_gbs_leaver_return_document,
+                             generate_poznan_leaver_return_document)
 from ad_automation import find_user_accounts, classify_scenario, offboard_leaver_account
 from snipeit_client import is_sim_asset, is_laptop_asset
 
@@ -573,13 +575,30 @@ class MainWindow(tk.Toplevel):
 
     # ── Assets card ───────────────────────────────────────────────────────────
 
+    _POZNAN_ASSIGNEES = {"cezary kosztyła", "aliaksei khutski"}
+
+    @staticmethod
+    def _leaver_region(ticket: dict) -> str:
+        """Return 'gbs', 'poznan', or 'lt' for this leaver ticket."""
+        company  = ticket.get("company",       "").lower()
+        office   = ticket.get("office",        "").lower()
+        summary  = ticket.get("summary",       "").lower()
+        assignee = ticket.get("assignee_name", "").lower()
+        if "business services" in company or re.search(r"\bgbs\b", summary):
+            return "gbs"
+        if (any(k in office or k in company for k in ["poznan", "poznań", "girpoltrans"])
+                or assignee in LeaverDetailPanel._POZNAN_ASSIGNEES):
+            return "poznan"
+        return "lt"
+
     @staticmethod
     def _leaver_snipe_location(ticket: dict) -> str:
         """Return the Snipe-IT check-in location name for this leaver ticket."""
-        company = ticket.get("company", "").lower()
-        summary = ticket.get("summary", "").lower()
-        if "business services" in company or re.search(r"\bgbs\b", summary):
+        region = LeaverDetailPanel._leaver_region(ticket)
+        if region == "gbs":
             return "GBS Hub"
+        if region == "poznan":
+            return "GirPolTrans Sp [Poznanska 4, Sady]"
         return "Girteka Park (Laisves 36)"
 
     def _draw_assets_card_loading(self):
@@ -1055,9 +1074,11 @@ class MainWindow(tk.Toplevel):
                         self.after(0, lambda: self._leavers_status.set("Return act cancelled."))
                         return
 
-                is_gbs = bool(re.search(r"\bgbs\b", ticket.get("summary", "").lower())
-                              or "business services" in ticket.get("company", "").lower())
-                generator = generate_gbs_leaver_return_document if is_gbs else generate_leaver_return_document
+                region = LeaverDetailPanel._leaver_region(ticket)
+                generator = {
+                    "gbs":    generate_gbs_leaver_return_document,
+                    "poznan": generate_poznan_leaver_return_document,
+                }.get(region, generate_leaver_return_document)
                 path, warnings = generator(ticket, self._snipeit)
 
                 def _ok():
