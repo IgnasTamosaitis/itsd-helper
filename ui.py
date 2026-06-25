@@ -587,14 +587,14 @@ class MainWindow(tk.Toplevel):
         if "business services" in company or re.search(r"\bgbs\b", summary):
             return "gbs"
         if (any(k in office or k in company for k in ["poznan", "poznań", "girpoltrans"])
-                or assignee in LeaverDetailPanel._POZNAN_ASSIGNEES):
+                or assignee in MainWindow._POZNAN_ASSIGNEES):
             return "poznan"
         return "lt"
 
     @staticmethod
     def _leaver_snipe_location(ticket: dict) -> str:
         """Return the Snipe-IT check-in location name for this leaver ticket."""
-        region = LeaverDetailPanel._leaver_region(ticket)
+        region = MainWindow._leaver_region(ticket)
         if region == "gbs":
             return "GBS Hub"
         if region == "poznan":
@@ -1074,7 +1074,7 @@ class MainWindow(tk.Toplevel):
                         self.after(0, lambda: self._leavers_status.set("Return act cancelled."))
                         return
 
-                region = LeaverDetailPanel._leaver_region(ticket)
+                region = MainWindow._leaver_region(ticket)
                 generator = {
                     "gbs":    generate_gbs_leaver_return_document,
                     "poznan": generate_poznan_leaver_return_document,
