@@ -1,6 +1,6 @@
 # ITSD Jira Helper
 
-A Windows desktop tool for ITSD that connects to Jira and centralises everything needed to handle both **new joiners** and **leavers** — from tracking start dates and completing the onboarding checklist, to setting up Active Directory accounts, triggering Jira automations, posting Jira comments, looking up Snipe-IT assets, and generating the printed leaver return act.
+A Windows desktop tool for ITSD that connects to Jira and centralises everything needed to handle **new joiners** — from tracking start dates and completing the onboarding checklist, to setting up Active Directory accounts, posting Jira comments, and checking assigned Snipe-IT assets.
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
@@ -9,10 +9,7 @@ The app runs silently in the system tray and sends you Windows notifications so 
 ## What the app does
 
 ### Ticket overview
-The main window now has two tabs:
-
-- **New Joiners** — onboarding tickets and AD workflow
-- **Leavers** — offboarding tickets, Snipe-IT lookups, Jira automation actions, document generation, and Jira comments
+The main window shows upcoming onboarding tickets and the AD workflow.
 
 The joiner list shows the person's name, their start date, how many checklist tasks have been completed, and whether their AD account has been set up. Tickets are colour-coded by urgency:
 
@@ -30,26 +27,6 @@ Clicking a person opens their full detail view on the right side, showing:
 - **Onboarding checklist** — five tasks to tick off as you complete them
 - **Notes** — a free-text field per person, auto-saved as you type
 - **Jira comments** — all comments from the ticket, loaded automatically
-
-### Leavers workspace
-The **Leavers** tab adds a dedicated offboarding workflow. Selecting a leaver opens a detail view with:
-
-- **Name, last working date, status, and company metadata**
-- **Snipe-IT laptop card** — automatically looks up the leaver in Snipe-IT and shows the detected laptop model and serial number
-- **Leaver notes** — separate auto-saved notes for offboarding
-- **Reusable Jira comment box** — write any comment manually or post a prepared buyout template
-- **Jira comments** — full ticket comment history, refreshed automatically
-
-### Leaver actions
-The leaver view includes dedicated actions for the full offboarding flow:
-
-- **Add accountants** — triggers the Jira manual automation rule `Add accountants for deduction | LT Group 1`
-- **Post buyout template** — posts a predefined Jira comment asking accountants to calculate the laptop residual value
-- **Generate return act** — creates a filled `.docx` copy of the printed return form using Jira data, the current Jira assignee, and whatever equipment is available from Snipe-IT
-
-The buyout comment can be posted **whenever needed** — it is no longer tied to the accountants automation button.
-
----
 
 ## Automations
 
@@ -183,7 +160,7 @@ Credentials and sensitive data are handled carefully throughout the app.
 - Network access to your Jira instance
 - The machine must be joined to the domain (required for AD Setup features)
 - A Jira API token — generate one at **id.atlassian.com → Security → API tokens**
-- A Snipe-IT API token if you want laptop lookup, buyout comment autofill, and return-act generation
+- A Snipe-IT API token if you want assigned-asset visibility in the joiner detail panel
 
 ---
 
@@ -208,7 +185,6 @@ When the app starts for the first time, a settings window opens automatically. F
 | Email | Your Atlassian account email |
 | API Token | The token generated from id.atlassian.com |
 | Joiners JQL | The filter that returns your onboarding tickets (pre-filled with the correct query) |
-| Leavers JQL | The filter that returns your leaver tickets |
 | Start date field | Leave as default unless your Jira schema has changed |
 | Snipe-IT URL | Your Snipe-IT base URL, for example `https://inventory.girteka.eu` |
 | Snipe-IT API Token | Shared IT team token — find it in Bitwarden |
@@ -241,9 +217,6 @@ The app runs in the **system tray** (bottom-right corner of your taskbar). Right
 | **Ask reporter** | Posts a comment to the Jira ticket asking for buddy and access info |
 | **Back up data** | Saves a timestamped backup of all notes and checklist progress |
 | **Open in Jira** | Opens the selected ticket in your browser |
-| **Add accountants** | Triggers the Jira manual automation used for leaver buyout flow |
-| **Post buyout template** | Posts the predefined accountants comment with laptop details |
-| **Generate return act** | Builds and opens the filled leaver return document |
 
 ### Data storage
 
@@ -259,7 +232,6 @@ C:\Users\<your username>\.jira-reminders\
 | `tasks.json` | Checklist state, notes, buddy assignments, AD setup records |
 | `ad_audit.log` | Append-only log of every AD setup run |
 | `backups\` | Timestamped backups created by **Back up data** |
-| `generated_docs\` | Generated leaver return documents |
 
 Your Jira API token and Snipe-IT token are stored separately in **Windows Credential Manager** under the name `jira-reminders`.
 
@@ -276,7 +248,5 @@ Use **Back up data** regularly to keep snapshots. Backups are saved in the `back
 **AD Setup returns errors** — ensure you are logged into a machine joined to the domain and that you enter valid domain admin credentials when prompted. The most common cause is expired credentials or not being connected to the corporate network / VPN.
 
 **API token missing after update** — if you upgraded from a version that stored the token in `config.json`, the token is migrated to Windows Credential Manager automatically on first launch. If the connection fails after upgrading, open Settings, re-enter the token, and save.
-
-**Return act has an empty equipment table** — the document generator only fills equipment rows that Snipe-IT reports as assigned to that user. If the document opens with a warning and no assets listed, check the employee's assigned assets directly in Snipe-IT.
 
 **Debug tool** — if you need to diagnose Jira connection or query issues, run `debug.py` from a terminal. It will test the connection and print a list of all matching tickets with their raw field values.

@@ -299,7 +299,6 @@ def sam_exists(sam: str) -> bool:
 
 
 DISABLED_OU_FRAGMENT = "OU=Disabled by Jira"
-LEAVER_DISABLED_OU = "OU=Diseiblinti,DC=girteka,DC=lt"
 
 
 def get_account_enabled_status(sam: str) -> tuple[bool | None, str, str]:
@@ -336,90 +335,6 @@ def _format_ps_error(out: str, err: str, code: int) -> str:
         return details
     return f"PowerShell exited with code {code}."
 
-
-def select_leaver_account(first: str, last: str, name: str = "") -> tuple[dict | None, list[dict], str]:
-    """Return the only safe AD account match for a leaver, or an error explaining ambiguity."""
-    accounts = []
-    if first and last:
-        accounts = find_user_accounts(first, last)
-    if not accounts and name:
-        accounts = find_user_accounts_by_name(name)
-    if not accounts:
-        return None, [], "No AD account was found for this leaver."
-    enabled = [account for account in accounts if account.get("enabled")]
-    if len(enabled) == 1:
-        return enabled[0], accounts, ""
-    if len(accounts) == 1:
-        return accounts[0], accounts, ""
-    summary = ", ".join(
-        f"{account.get('username')} ({'enabled' if account.get('enabled') else 'disabled'})"
-        for account in accounts
-    )
-    return None, accounts, f"Multiple AD accounts matched this leaver: {summary}"
-
-
-def offboard_leaver_account(first: str, last: str, name: str = "") -> dict:
-    """
-    Disable a leaver in AD, remove all non-primary groups, move to the disabled OU,
-    and clear ipPhone to revoke 3CX access.
-    """
-    account, matches, error = select_leaver_account(first, last, name)
-    if error:
-        raise ValueError(error)
-
-    sam = account["username"]
-    out, err, code = run_ps(f"""
-$cred = Get-Credential -Message 'Enter your AD admin credentials'
-$ErrorActionPreference = "Stop"
-Import-Module ActiveDirectory -ErrorAction Stop
-$dc = [string](Get-ADDomainController -Discover -Writable | Select-Object -ExpandProperty HostName)
-$PSDefaultParameterValues = @{{'*-AD*:Credential' = $cred; '*-AD*:Server' = $dc}}
-Write-Host "Using DC: $dc"
-
-$u = Get-ADUser -Identity '{_e(sam)}' -Properties DistinguishedName,MemberOf,ipPhone,Enabled -ErrorAction Stop
-$groups = @($u.MemberOf)
-foreach ($groupDn in $groups) {{
-    try {{
-        Remove-ADGroupMember -Identity $groupDn -Members $u.DistinguishedName -Confirm:$false -ErrorAction Stop
-        $groupName = (Get-ADGroup -Identity $groupDn -Properties Name).Name
-        Write-Host "OK  Removed from group: $groupName"
-    }} catch {{
-        Write-Warning "Could not remove group $groupDn : $_"
-    }}
-}}
-if ($groups.Count -eq 0) {{
-    Write-Host "OK  No removable groups found"
-}}
-
-if ($u.Enabled) {{
-    Disable-ADAccount -Identity '{_e(sam)}'
-    Write-Host "OK  Account disabled"
-}} else {{
-    Write-Host "OK  Account already disabled"
-}}
-
-Set-ADUser -Identity '{_e(sam)}' -Clear ipPhone
-Write-Host "OK  IP phone cleared"
-
-$fresh = Get-ADUser -Identity '{_e(sam)}' -Properties DistinguishedName
-if ($fresh.DistinguishedName -notlike '*,{_e(LEAVER_DISABLED_OU)}') {{
-    Move-ADObject -Identity $fresh.DistinguishedName -TargetPath '{_e(LEAVER_DISABLED_OU)}'
-    Write-Host "OK  Account moved to disabled users OU"
-}} else {{
-    Write-Host "OK  Account already in disabled users OU"
-}}
-""", timeout=120)
-    if code != 0:
-        raise RuntimeError(_format_ps_error(out, err, code))
-    removed = sum(1 for line in out.splitlines() if "Removed from group:" in line)
-    return {
-        "account": sam,
-        "removed_groups": removed,
-        "target_ou": LEAVER_DISABLED_OU,
-        "output": out,
-        "warnings": err,
-        "matches": matches,
-    }
 
 # ── AD queries ────────────────────────────────────────────────────────────────
 

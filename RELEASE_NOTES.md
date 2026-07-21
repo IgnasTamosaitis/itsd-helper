@@ -2,6 +2,17 @@
 
 ---
 
+## v1.2.8 - Remove Leavers Workspace
+
+This release removes the app-side leaver workflow now that offboarding automation runs directly from Jira tickets.
+
+- Removed the Leavers tab, leaver polling, return-act generation, accountants automation, and app-side AD/Snipe-IT offboarding actions
+- Kept Snipe-IT read-only asset visibility for new joiner onboarding
+- Removed leaver document templates and the unused `python-docx` dependency
+- Updated settings and documentation to reflect the joiner-only workflow
+
+---
+
 ## v1.2.5 - AD Rejoiner Conflict Fixes
 
 This release fixes the AD Setup rejoiner-dual flow when SuccessFactors dummy accounts have AD conflict duplicates.
