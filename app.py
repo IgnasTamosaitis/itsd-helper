@@ -258,6 +258,28 @@ class App:
 
     def _do_uninstall(self) -> None:
         import tkinter.messagebox as mb
+        if updater.IS_FROZEN:
+            if not mb.askyesno(
+                "Uninstall Jira Reminders",
+                "Windows Installer will remove Jira Reminders and its shortcuts.\n\n"
+                "Your personal settings and checklist history will be kept so they "
+                "are available if you reinstall.\n\nContinue?",
+                parent=self._root,
+            ):
+                return
+            if not updater.launch_installed_uninstaller():
+                mb.showerror(
+                    "Uninstall unavailable",
+                    "The Windows Installer registration could not be found. You can "
+                    "still remove Jira Reminders from Windows Settings → Apps.",
+                    parent=self._root,
+                )
+                return
+            if self._tray:
+                self._tray.stop()
+            self._root.quit()
+            return
+
         if not mb.askyesno(
             "Uninstall",
             "This will remove Jira Reminders from Windows Startup "
@@ -372,4 +394,6 @@ class App:
 
 
 if __name__ == "__main__":
+    if "--smoke-test" in sys.argv:
+        raise SystemExit(0)
     App().run()

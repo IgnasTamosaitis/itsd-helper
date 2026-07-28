@@ -92,19 +92,31 @@ The wizard searches AD by first and last name and automatically detects one of t
 **Rejoiner (single)** — same as dual but sources employment data from the Jira ticket and buddy instead of an SF dummy.
 
 ### Password handling
-The wizard generates a **random password** automatically when it opens — you never see a hardcoded placeholder. The password field is **masked by default**; click **Show** to reveal it. Clicking **Copy** copies the password to the clipboard and **automatically clears it after 30 seconds**, so it is never left sitting in clipboard history. The same auto-clear applies to the SMS template copy and the generated PowerShell script copy.
+The wizard uses the standard onboarding password and masks it by default; click **Show** to reveal it. Clicking **Copy** copies the password to the clipboard and **automatically clears it after 30 seconds**. The same auto-clear applies to the generated PowerShell script copy. The SMS handoff template contains the username only.
 
-### Company address map
-For Girteka group companies (GCC, TNDM, Girteka*, ME Trailers, ClassTrucks Lithuania), the following are set automatically:
+### Location detection and address map
+The employee's Jira **Office Location** is the primary location signal. The
+company is used as a fallback. Matching ignores capitalization, punctuation,
+legal suffix formatting, and Lithuanian/Polish diacritics.
 
-| Field | Value |
+| Jira location | AD location handling |
 |---|---|
-| Street | Laisvės pr. 36 |
-| City | Vilnius |
-| PostalCode | 5623 |
-| Country | LT |
-| Office | Vilnius |
-| extensionAttribute15 | SF |
+| **Girteka Park / Vilnius** | Laisvės pr. 36, Vilnius, LT; Office `Vilnius`; extensionAttribute15 `SF` |
+| **Siauliai Campus / Šiauliai** | Pročiūnų g. 16, LT-77103 Šiauliai; Office `Siauliai Campus`; extensionAttribute15 `SF` |
+| **Tbilisi / GBS** | Ilia Chavchavadze Ave. 37L, Tbilisi, GE; Office `Tbilisi` |
+| **Poznańska 4, Sady / Girpoltrans** | Poznańska 4, Sady, PL; Office `Poznan` |
+| **Other recognised Polish companies** | Applies Poland defaults and the Jira office, but preserves authoritative SuccessFactors street/city/postal data until that company's campus address is confirmed |
+
+Recognised Šiauliai companies include Mireli, Trasis, Girmeta, Termolita,
+Girtrans, KLP Transport, Premium Trans, and TermoTrans. Recognised Polish
+companies include Girpoltrans, TransEu Poland, Eupoltrans, Scanpoltrans,
+Polservice, GoTrans, ME Trailers Poland, and ClassTrucks Poland. Vilnius legal
+entities include Trucks Merchant, Willgrow, GCC, TNDM Trucking, Girteka Nordic,
+Girteka Transport, Girteka, Girteka Group, Girteka Logistics, ME Trailers, and
+Girteka Cargo.
+
+If the recognised Office Location and company point to different sites, the AD
+wizard displays a warning and uses Office Location for the proposed changes.
 
 ### Template user (buddy)
 Clicking **Use as template** fetches the buddy's OU, groups, Department, and extended attributes (`extensionAttribute5`, `extensionAttribute14`). Each extended attribute is shown with a **checkbox** so you can decide per-attribute whether to copy it. `extensionAttribute5` is only shown for **rejoiner (single)** — for new joiners and rejoiner (dual) it is already set correctly by SF or the SF dummy.
@@ -145,7 +157,7 @@ Credentials and sensitive data are handled carefully throughout the app.
 
 **File permissions** — `config.json` and `tasks.json` are restricted to your Windows user account only (`icacls /inheritance:r`) the first time each file is written.
 
-**Password security** — the AD Setup wizard always generates a fresh random password. The field is masked by default and clipboard contents are cleared automatically after 30 seconds.
+**Password security** — the standard onboarding password is masked by default and sensitive clipboard contents are cleared automatically after 30 seconds.
 
 **PowerShell execution** — generated scripts run with `-ExecutionPolicy RemoteSigned` rather than `Bypass`, respecting the domain's signing policy for any downloaded modules.
 
@@ -156,46 +168,68 @@ Credentials and sensitive data are handled carefully throughout the app.
 ## Requirements
 
 - Windows 10 or 11
-- Python 3.11 or later — download from [python.org](https://www.python.org)
 - Network access to your Jira instance
 - The machine must be joined to the domain (required for AD Setup features)
 - A Jira API token — generate one at **id.atlassian.com → Security → API tokens**
 - A Snipe-IT API token if you want assigned-asset visibility in the joiner detail panel
 
+Python and all other application dependencies are included in the Windows
+installer. Colleagues do not need to install Python, clone the repository, or
+run any scripts.
+
 ---
 
 ## Installation
 
-1. Download or copy the app folder to your machine
-2. Double-click **`setup.bat`**
+1. Download the latest **`Jira-Reminders-x.y.z.msi`** from the GitHub release
+2. Double-click the MSI and complete the short Windows Installer flow
+3. Jira Reminders opens automatically at the first-time setup screen
 
-The setup script installs all required dependencies and adds the app to your Windows Startup folder so it launches automatically every time you log in.
+The MSI installs for the current Windows user, so administrator rights are not
+normally required. It creates:
 
-To start the app immediately without rebooting, double-click **`start_reminders.vbs`**.
+- a Desktop shortcut
+- a Start menu shortcut
+- a Windows Startup shortcut, so the app launches whenever that user signs in
 
 ---
 
 ## First-time configuration
 
-When the app starts for the first time, a settings window opens automatically. Fill in:
+When the app starts for the first time, a welcome screen opens automatically.
+The normal setup asks for:
 
 | Field | What to enter |
 |---|---|
-| Jira URL | `https://yourcompany.atlassian.net` |
-| Email | Your Atlassian account email |
-| API Token | The token generated from id.atlassian.com |
-| Joiners JQL | The filter that returns your onboarding tickets (pre-filled with the correct query) |
-| Start date field | Leave as default unless your Jira schema has changed |
-| Snipe-IT URL | Your Snipe-IT base URL, for example `https://inventory.girteka.eu` |
-| Snipe-IT API Token | Shared IT team token — find it in Bitwarden |
-| Remind N days before | How many days ahead to start sending notifications (default: 3) |
-| Check every N minutes | How often the app polls Jira in the background (default: 30) |
+| Atlassian email | Your Girteka Atlassian account email; the app tries to pre-fill it from Windows |
+| Jira API token | Your token from the linked Atlassian token page |
+| Snipe-IT API token | Optional; required only for assigned-asset visibility |
+| Notification timing | How many days before a start date reminders begin |
 
-Click **Test Connection** to verify your credentials before saving.
+Click **Test Jira connection** to verify the email and Jira token, then click
+**Save & start**.
+
+The Girteka Jira URL, Snipe-IT URL, start-date Jira field, polling interval, and
+assigned-ticket JQL are pre-filled. They are available under **Advanced
+settings** if troubleshooting is required. The default Jira query remains:
+
+```text
+assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)
+```
 
 Your Jira API token and Snipe-IT API token are saved to **Windows Credential Manager** — they will not appear in any file on disk.
 
 Settings can be changed at any time via the tray icon → **Settings**.
+
+To remove the app, use the tray icon → **Uninstall**, or Windows Settings →
+**Apps → Installed apps → Jira Reminders**. Personal settings and checklist
+history are retained to support reinstallation.
+
+### Source setup for developers
+
+`setup.bat` and `start_reminders.vbs` remain available for source development
+and troubleshooting. They are no longer part of the colleague installation
+process.
 
 ---
 

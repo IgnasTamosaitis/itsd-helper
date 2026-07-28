@@ -1,4 +1,5 @@
 import re
+import subprocess
 import threading
 import tkinter as tk
 from tkinter import messagebox
@@ -1463,35 +1464,98 @@ class SetupDialog(tk.Toplevel):
     def __init__(self, parent, prefill: dict | None = None):
         super().__init__(parent)
         self.result = None
-        self.title("Jira Reminders - Settings")
-        self.geometry("580x520")
+        self._first_run = prefill is None
+        self._advanced_visible = not self._first_run
+        self.title("Welcome to Jira Reminders" if self._first_run else "Jira Reminders - Settings")
+        self.geometry("620x650" if self._first_run else "620x720")
+        self.minsize(560, 520)
         self.resizable(False, True)
         self.configure(bg=BG)
         self.grab_set()
 
         cfg = {**self.DEFAULTS, **(prefill or {})}
+        if self._first_run and not cfg["email"]:
+            cfg["email"] = self._guess_email()
         self._vars = {k: tk.StringVar(value=str(v)) for k, v in cfg.items()}
         self._build()
         self.protocol("WM_DELETE_WINDOW", self.destroy)
 
+    @staticmethod
+    def _guess_email() -> str:
+        """Use the signed-in Windows UPN when it looks like an email address."""
+        try:
+            result = subprocess.run(
+                ["whoami.exe", "/upn"],
+                capture_output=True,
+                text=True,
+                timeout=2,
+                creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+            )
+            candidate = result.stdout.strip()
+            if re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", candidate):
+                return candidate
+        except Exception:
+            pass
+        return ""
+
     def _build(self):
-        # Fixed header
-        tk.Label(self, text="  Jira Reminders - Settings", bg=ACCENT, fg=WHITE,
-                 font=("Segoe UI", 13, "bold")).pack(fill="x", ipady=10)
+        header = tk.Frame(self, bg=ACCENT)
+        header.pack(fill="x")
+        tk.Label(
+            header,
+            text="Welcome to Jira Reminders" if self._first_run else "Jira Reminders settings",
+            bg=ACCENT,
+            fg=WHITE,
+            font=("Segoe UI", 15, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=26, pady=(16, 2))
+        tk.Label(
+            header,
+            text=(
+                "Connect your accounts once, then the app will start automatically."
+                if self._first_run
+                else "Update your account connection or notification preferences."
+            ),
+            bg=ACCENT,
+            fg="#DDEBFF",
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill="x", padx=26, pady=(0, 16))
 
-        # Fixed bottom bar with buttons, packed before the canvas so it's always visible
         btm = tk.Frame(self, bg=BG, bd=0)
-        btm.pack(side="bottom", fill="x", padx=24, pady=10)
+        btm.pack(side="bottom", fill="x", padx=26, pady=(8, 16))
         self._msg = tk.Label(btm, text="", bg=BG, fg=GRAY, font=("Segoe UI", 9))
-        self._msg.pack(side="bottom", pady=(4, 0))
-        tk.Button(btm, text="Save & Start", command=self._save,
-                  relief="flat", bd=0, bg=ACCENT, fg=WHITE,
-                  font=("Segoe UI", 9, "bold"), padx=14, pady=5).pack(side="right")
-        tk.Button(btm, text="Test Connection", command=self._test,
-                  relief="flat", bd=0, bg="#DEEBFF", fg=ACCENT,
-                  font=("Segoe UI", 9), padx=10, pady=5).pack(side="left")
+        self._msg.pack(side="bottom", fill="x", pady=(7, 0))
+        self._save_btn = tk.Button(
+            btm,
+            text="Save & start" if self._first_run else "Save",
+            command=self._save,
+            relief="flat",
+            bd=0,
+            bg=ACCENT,
+            fg=WHITE,
+            activebackground="#0055B8",
+            activeforeground=WHITE,
+            font=("Segoe UI", 9, "bold"),
+            padx=18,
+            pady=7,
+        )
+        self._save_btn.pack(side="right")
+        self._test_btn = tk.Button(
+            btm,
+            text="Test Jira connection",
+            command=self._test,
+            relief="flat",
+            bd=0,
+            bg="#DEEBFF",
+            fg=ACCENT,
+            activebackground="#CCE0FF",
+            font=("Segoe UI", 9),
+            padx=12,
+            pady=7,
+        )
+        self._test_btn.pack(side="left")
 
-        # Scrollable canvas for form fields
         canvas = tk.Canvas(self, bg=BG, highlightthickness=0)
         scrollbar = tk.Scrollbar(self, orient="vertical", command=canvas.yview)
         canvas.configure(yscrollcommand=scrollbar.set)
@@ -1513,42 +1577,173 @@ class SetupDialog(tk.Toplevel):
         # Mousewheel scrolling
         def _on_mousewheel(event):
             canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
-        canvas.bind_all("<MouseWheel>", _on_mousewheel)
+        self.bind("<MouseWheel>", _on_mousewheel)
 
-        fields = [
-            ("Jira URL",               "jira_url",               False,
-             "https://girteka.atlassian.net"),
-            ("Email",                  "email",                  False,
-             "Your Atlassian account email"),
-            ("API Token",              "api_token",              True,
-             "Create at id.atlassian.com -> Security -> API tokens"),
-            ("Joiners JQL",            "jql",                    False,
-             'Filter for onboarding tickets - issue type is "SF: Employee onboarding"'),
-            ("Start date field",       "date_field",             False,
-             "customfield_10980  (do not change unless Jira schema changed)"),
-            ("Snipe-IT URL",           "snipeit_url",            False,
-             "https://inventory.girteka.eu"),
-            ("Snipe-IT API Token",     "snipeit_token",          True,
-             "Personal access token from Snipe-IT → Profile → API"),
-            ("Remind N days before",   "remind_days_before",     False,
-             "3 = notify 3 days ahead and on the start day"),
-            ("Check every N minutes",  "check_interval_minutes", False,
-             "Background poll interval (30 is a good default)"),
-        ]
+        tk.Label(
+            form,
+            text="Your account",
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 11, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=26, pady=(20, 2))
+        tk.Label(
+            form,
+            text="Tokens are saved securely in Windows Credential Manager.",
+            bg=BG,
+            fg=GRAY,
+            font=("Segoe UI", 9),
+            anchor="w",
+        ).pack(fill="x", padx=26, pady=(0, 7))
 
-        for label, key, secret, hint in fields:
-            tk.Label(form, text=label, bg=BG, fg=TEXT,
-                     font=("Segoe UI", 9, "bold"), anchor="w").pack(fill="x",
-                     padx=24, pady=(8, 0))
-            tk.Entry(form, textvariable=self._vars[key],
-                     show="*" if secret else "",
-                     relief="solid", bd=1, font=("Segoe UI", 10)).pack(
-                     fill="x", padx=24, ipady=4)
-            tk.Label(form, text=hint, bg=BG, fg=GRAY,
-                     font=("Segoe UI", 8)).pack(fill="x", padx=24)
+        self._add_field(form, "Atlassian email", "email", hint="Usually your Girteka work email")
+        self._add_field(form, "Jira API token", "api_token", secret=True)
+
+        token_row = tk.Frame(form, bg=BG)
+        token_row.pack(fill="x", padx=26, pady=(2, 4))
+        token_link = tk.Label(
+            token_row,
+            text="Create a Jira API token ↗",
+            bg=BG,
+            fg=ACCENT,
+            cursor="hand2",
+            font=("Segoe UI", 8, "underline"),
+        )
+        token_link.pack(side="left")
+        token_link.bind(
+            "<Button-1>",
+            lambda _event: webbrowser.open(
+                "https://id.atlassian.com/manage-profile/security/api-tokens"
+            ),
+        )
+
+        self._add_field(
+            form,
+            "Snipe-IT API token (optional)",
+            "snipeit_token",
+            secret=True,
+            hint="Needed only to show assigned assets",
+        )
+        self._show_tokens = tk.BooleanVar(value=False)
+        tk.Checkbutton(
+            form,
+            text="Show tokens",
+            variable=self._show_tokens,
+            command=self._toggle_tokens,
+            bg=BG,
+            fg=GRAY,
+            activebackground=BG,
+            selectcolor=WHITE,
+            font=("Segoe UI", 8),
+        ).pack(anchor="w", padx=22, pady=(0, 4))
+
+        self._add_field(
+            form,
+            "Notify this many days before a start date",
+            "remind_days_before",
+            hint="The default is 3 days",
+        )
+
+        self._advanced_btn = tk.Button(
+            form,
+            text="Advanced settings ▾" if self._advanced_visible else "Advanced settings ▸",
+            command=self._toggle_advanced,
+            relief="flat",
+            bd=0,
+            bg=BG,
+            fg=ACCENT,
+            activebackground=BG,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+            padx=0,
+        )
+        self._advanced_btn.pack(fill="x", padx=26, pady=(15, 5))
+
+        self._advanced = tk.Frame(form, bg=BG)
+        self._add_field(
+            self._advanced,
+            "Jira URL",
+            "jira_url",
+            hint="Managed default — normally do not change",
+        )
+        self._add_field(
+            self._advanced,
+            "Assigned onboarding tickets JQL",
+            "jql",
+            hint="Keeps tickets filtered to assignee = currentUser()",
+        )
+        self._add_field(
+            self._advanced,
+            "Start date Jira field",
+            "date_field",
+            hint="Managed default — normally do not change",
+        )
+        self._add_field(
+            self._advanced,
+            "Snipe-IT URL",
+            "snipeit_url",
+            hint="Managed default — normally do not change",
+        )
+        self._add_field(
+            self._advanced,
+            "Check for Jira updates every N minutes",
+            "check_interval_minutes",
+            hint="The default is 30 minutes",
+        )
+        if self._advanced_visible:
+            self._advanced.pack(fill="x")
+
+    def _add_field(self, parent, label: str, key: str, secret: bool = False, hint: str = ""):
+        tk.Label(
+            parent,
+            text=label,
+            bg=BG,
+            fg=TEXT,
+            font=("Segoe UI", 9, "bold"),
+            anchor="w",
+        ).pack(fill="x", padx=26, pady=(8, 2))
+        entry = tk.Entry(
+            parent,
+            textvariable=self._vars[key],
+            show="•" if secret else "",
+            relief="solid",
+            bd=1,
+            font=("Segoe UI", 10),
+            highlightthickness=1,
+            highlightbackground=INPUT_BORDER,
+            highlightcolor=ACCENT,
+        )
+        entry.pack(fill="x", padx=26, ipady=5)
+        if secret:
+            if not hasattr(self, "_token_entries"):
+                self._token_entries = []
+            self._token_entries.append(entry)
+        if hint:
+            tk.Label(
+                parent,
+                text=hint,
+                bg=BG,
+                fg=GRAY,
+                font=("Segoe UI", 8),
+                anchor="w",
+            ).pack(fill="x", padx=26, pady=(2, 0))
+
+    def _toggle_tokens(self):
+        show = "" if self._show_tokens.get() else "•"
+        for entry in getattr(self, "_token_entries", []):
+            entry.configure(show=show)
+
+    def _toggle_advanced(self):
+        self._advanced_visible = not self._advanced_visible
+        if self._advanced_visible:
+            self._advanced.pack(fill="x")
+            self._advanced_btn.configure(text="Advanced settings ▾")
+        else:
+            self._advanced.pack_forget()
+            self._advanced_btn.configure(text="Advanced settings ▸")
 
     def _collect(self) -> dict:
-        return {
+        cfg = {
             "jira_url":               self._vars["jira_url"].get().strip().rstrip("/"),
             "email":                  self._vars["email"].get().strip(),
             "api_token":              self._vars["api_token"].get().strip(),
@@ -1559,17 +1754,53 @@ class SetupDialog(tk.Toplevel):
             "remind_days_before":     int(self._vars["remind_days_before"].get() or 3),
             "check_interval_minutes": int(self._vars["check_interval_minutes"].get() or 30),
         }
+        if not cfg["jira_url"].startswith("https://"):
+            raise ValueError("Jira URL must start with https://")
+        if not re.fullmatch(r"[^@\s]+@[^@\s]+\.[^@\s]+", cfg["email"]):
+            raise ValueError("Enter your Atlassian account email address.")
+        if not cfg["api_token"]:
+            raise ValueError("Enter your Jira API token.")
+        if not cfg["jql"]:
+            raise ValueError("The assigned onboarding tickets JQL cannot be empty.")
+        if not 0 <= cfg["remind_days_before"] <= 30:
+            raise ValueError("Reminder days must be between 0 and 30.")
+        if not 5 <= cfg["check_interval_minutes"] <= 1440:
+            raise ValueError("The Jira check interval must be between 5 and 1440 minutes.")
+        return cfg
 
     def _test(self):
         from jira_client import JiraClient
-        cfg = self._collect()
-        self._msg.config(text="Connecting...", fg=GRAY)
-        self.update()
         try:
-            name = JiraClient(cfg["jira_url"], cfg["email"], cfg["api_token"]).test_connection()
-            self._msg.config(text=f"Connected as: {name}", fg=GREEN)
+            cfg = self._collect()
         except Exception as e:
             self._msg.config(text=f"Error: {e}", fg=RED)
+            return
+        self._msg.config(text="Connecting to Jira…", fg=GRAY)
+        self._test_btn.configure(state="disabled")
+
+        def _connect():
+            try:
+                name = JiraClient(
+                    cfg["jira_url"], cfg["email"], cfg["api_token"]
+                ).test_connection()
+                self.after(
+                    0,
+                    lambda: self._finish_test(f"Connected successfully as {name}", GREEN),
+                )
+            except Exception as e:
+                error = str(e)
+                self.after(
+                    0,
+                    lambda message=error: self._finish_test(
+                        f"Connection failed: {message}", RED
+                    ),
+                )
+
+        threading.Thread(target=_connect, daemon=True).start()
+
+    def _finish_test(self, message: str, color: str):
+        self._msg.config(text=message, fg=color)
+        self._test_btn.configure(state="normal")
 
     def _save(self):
         try:

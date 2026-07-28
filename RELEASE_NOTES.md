@@ -2,6 +2,24 @@
 
 ---
 
+## v1.3.0 - Multi-location onboarding and Windows installer
+
+- Added office-first onboarding detection for Vilnius, Šiauliai, Poland, and GBS
+- Added the confirmed Šiauliai Campus address and all known Šiauliai company aliases
+- Added all known Polish company aliases without assuming that every Polish company uses the Sady address
+- Preserved SuccessFactors street, city, and postal values for Polish companies whose exact campus address is not confirmed
+- Added an AD wizard warning when Jira Office Location and company indicate different sites
+- Added support for Jira manager values supplied as email addresses
+- Kept the default Jira query scoped to `assignee = currentUser()`
+- Added automated tests for company aliases, Jira office values, address safety, and generated AD scripts
+- Added a polished per-user MSI that bundles Python and all application dependencies
+- Added automatic Desktop, Start menu, and Windows Startup shortcuts
+- The MSI launches the app after installation and opens first-time configuration automatically
+- Simplified first-time setup to request only the user's email and API tokens; managed Jira fields and the current-user JQL remain under Advanced settings
+- Installed builds now update through MSI release assets and uninstall cleanly through Windows Installer
+
+---
+
 ## v1.2.8 - Remove Leavers Workspace
 
 This release removes the app-side leaver workflow now that offboarding automation runs directly from Jira tickets.

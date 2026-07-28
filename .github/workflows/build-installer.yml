@@ -1,0 +1,53 @@
+name: Build Windows installer
+
+on:
+  workflow_dispatch:
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+          cache: pip
+
+      - name: Set up .NET
+        uses: actions/setup-dotnet@v4
+        with:
+          dotnet-version: "8.0.x"
+
+      - name: Build MSI
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $releaseVersion = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $releaseVersion = (Get-Content -LiteralPath version.txt -Raw).Trim()
+          }
+          ./packaging/build_installer.ps1 -Version $releaseVersion
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: Jira-Reminders-Windows-Installer
+          path: dist/installer/*.msi
+          if-no-files-found: error
+
+      - name: Attach installer to GitHub release
+        if: github.ref_type == 'tag'
+        env:
+          GH_TOKEN: ${{ github.token }}
+        shell: pwsh
+        run: gh release upload "${{ github.ref_name }}" dist/installer/*.msi --clobber

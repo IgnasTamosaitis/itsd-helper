@@ -19,3 +19,11 @@ generated_docs/
 # Local updater output
 update.log
 _update_staging/
+
+# Installer build output
+/build/
+/dist/
+/packaging/installer/bin/
+/packaging/installer/obj/
+/.tools/
+*.wixpdb

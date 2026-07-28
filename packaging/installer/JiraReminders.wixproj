@@ -1,0 +1,16 @@
+<Project Sdk="WixToolset.Sdk/5.0.2">
+  <PropertyGroup>
+    <OutputType>Package</OutputType>
+    <OutputName>Jira-Reminders-$(ProductVersion)</OutputName>
+    <InstallerPlatform>x64</InstallerPlatform>
+    <!-- ICE91 is only relevant to packages that may switch to per-machine.
+         This package is intentionally fixed to Scope="perUser". -->
+    <SuppressIces>ICE91</SuppressIces>
+    <DefineConstants>
+      ProductVersion=$(ProductVersion);
+      AppSource=$(AppSource);
+      VersionFile=$(VersionFile);
+      IconSource=$(IconSource)
+    </DefineConstants>
+  </PropertyGroup>
+</Project>

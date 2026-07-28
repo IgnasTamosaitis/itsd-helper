@@ -2,9 +2,11 @@
 from __future__ import annotations
 
 import os
+import re
 import shutil
 import subprocess
 import sys
+import tempfile
 import zipfile
 from pathlib import Path
 
@@ -13,9 +15,18 @@ import requests
 GITHUB_REPO    = "IgnasTamosaitis/itsd-helper"
 _RELEASES_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
 
-APP_DIR      = Path(__file__).resolve().parent
+IS_FROZEN    = bool(getattr(sys, "frozen", False))
+APP_DIR      = (
+    Path(sys.executable).resolve().parent
+    if IS_FROZEN
+    else Path(__file__).resolve().parent
+)
 VERSION_FILE = APP_DIR / "version.txt"
-_STAGING_DIR = APP_DIR / "_update_staging"
+_STAGING_DIR = (
+    Path(tempfile.gettempdir()) / "JiraRemindersUpdate"
+    if IS_FROZEN
+    else APP_DIR / "_update_staging"
+)
 
 
 def current_version() -> str:
@@ -40,11 +51,29 @@ def check_for_update() -> dict | None:
         release = r.json()
         tag = release.get("tag_name", "")
         if _parse_ver(tag) > _parse_ver(current_version()):
-            return {
+            result = {
                 "version": tag,
-                "zipball_url": release["zipball_url"],
                 "notes": release.get("body", "").strip(),
             }
+            if IS_FROZEN:
+                installer = next(
+                    (
+                        asset
+                        for asset in release.get("assets", [])
+                        if asset.get("name", "").casefold().endswith(".msi")
+                    ),
+                    None,
+                )
+                if not installer:
+                    print(f"[updater] release {tag} has no MSI asset")
+                    return None
+                result.update({
+                    "installer_url": installer["browser_download_url"],
+                    "installer_name": installer["name"],
+                })
+            else:
+                result["zipball_url"] = release["zipball_url"]
+            return result
     except Exception as e:
         print(f"[updater] check failed: {e}")
     return None
@@ -126,10 +155,71 @@ def _launch_ps1(src: Path, new_version: str) -> None:
     )
 
 
+def _launch_msi_update(msi_path: Path) -> None:
+    """Install an MSI update after this frozen process exits, then relaunch it."""
+    if not IS_FROZEN:
+        raise RuntimeError("MSI updates are only available in the installed app.")
+
+    ps1 = _STAGING_DIR / "_apply_msi_update.ps1"
+    vbs = _STAGING_DIR / "_run_msi_update.vbs"
+    app_exe = Path(sys.executable).resolve()
+
+    def ps_quote(value: Path) -> str:
+        return "'" + str(value).replace("'", "''") + "'"
+
+    ps1.write_text(
+        "$ErrorActionPreference = 'Stop'\n"
+        f"$msi = {ps_quote(msi_path)}\n"
+        f"$app = {ps_quote(app_exe)}\n"
+        "Start-Sleep -Seconds 3\n"
+        "$args = @('/i', $msi, '/passive', '/norestart')\n"
+        "$p = Start-Process -FilePath 'msiexec.exe' -ArgumentList $args -Wait -PassThru\n"
+        "if ($p.ExitCode -notin @(0, 1641, 3010)) {\n"
+        "    Add-Type -AssemblyName PresentationFramework\n"
+        "    [System.Windows.MessageBox]::Show("
+        "'Jira Reminders update failed with Windows Installer code ' + $p.ExitCode, "
+        "'Update failed') | Out-Null\n"
+        "    exit $p.ExitCode\n"
+        "}\n"
+        "Start-Sleep -Seconds 2\n"
+        "Start-Process -FilePath $app\n"
+        f"Remove-Item -LiteralPath {ps_quote(_STAGING_DIR)} -Recurse -Force "
+        "-ErrorAction SilentlyContinue\n",
+        encoding="utf-8",
+    )
+    ps1_escaped = str(ps1).replace('"', '""')
+    vbs.write_text(
+        'Set WshShell = CreateObject("WScript.Shell")\n'
+        f'WshShell.Run "powershell -NoProfile -ExecutionPolicy Bypass'
+        f' -WindowStyle Hidden -File ""{ps1_escaped}""", 0, False\n',
+        encoding="utf-8",
+    )
+    subprocess.Popen(
+        ["wscript.exe", str(vbs)],
+        creationflags=subprocess.DETACHED_PROCESS | subprocess.CREATE_NO_WINDOW,
+    )
+
+
 def download_and_apply(release: dict, progress_cb=None) -> None:
-    """Download the release zip and schedule file replacement after the app exits."""
+    """Download and schedule the appropriate source or MSI update."""
     _force_remove(_STAGING_DIR)
     _STAGING_DIR.mkdir()
+
+    if IS_FROZEN:
+        installer_url = release.get("installer_url", "")
+        if not installer_url:
+            raise RuntimeError("This release does not contain a Windows installer.")
+        installer_name = release.get("installer_name") or "JiraRemindersUpdate.msi"
+        msi_path = _STAGING_DIR / Path(installer_name).name
+        if progress_cb:
+            progress_cb("Downloading installer…")
+        r = requests.get(installer_url, stream=True, timeout=120)
+        r.raise_for_status()
+        with open(msi_path, "wb") as f:
+            for chunk in r.iter_content(chunk_size=16384):
+                f.write(chunk)
+        _launch_msi_update(msi_path)
+        return
 
     zip_path = _STAGING_DIR / "update.zip"
 
@@ -156,6 +246,8 @@ def download_and_apply(release: dict, progress_cb=None) -> None:
 
 def simulate_local_update(new_version: str = "test") -> None:
     """Stage from the current directory and run the update PS1 — for local testing only."""
+    if IS_FROZEN:
+        raise RuntimeError("Local source-update simulation is unavailable in an MSI install.")
     _force_remove(_STAGING_DIR)
     _STAGING_DIR.mkdir()
     src = _STAGING_DIR / "extracted" / "local-test"
@@ -212,11 +304,15 @@ def _ensure_shortcut(shortcut: Path) -> None:
 
 
 def ensure_startup_shortcut() -> None:
+    if IS_FROZEN:
+        return  # owned by Windows Installer
     startup = Path(os.environ["APPDATA"]) / "Microsoft/Windows/Start Menu/Programs/Startup"
     _ensure_shortcut(startup / "JiraReminders.lnk")
 
 
 def ensure_desktop_shortcut() -> None:
+    if IS_FROZEN:
+        return  # owned by Windows Installer
     import ctypes.wintypes
     buf = ctypes.create_unicode_buffer(ctypes.wintypes.MAX_PATH)
     ctypes.windll.shell32.SHGetFolderPathW(0, 0x0000, 0, 0, buf)  # CSIDL_DESKTOP
@@ -231,4 +327,48 @@ def remove_startup_shortcut() -> bool:
     if shortcut.exists():
         shortcut.unlink()
         return True
+    return False
+
+
+def launch_installed_uninstaller() -> bool:
+    """Launch the MSI uninstall UI for the current user's installed app."""
+    if not IS_FROZEN or os.name != "nt":
+        return False
+    try:
+        import winreg
+    except ImportError:
+        return False
+
+    registry_locations = [
+        (winreg.HKEY_CURRENT_USER, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\Microsoft\Windows\CurrentVersion\Uninstall"),
+        (winreg.HKEY_LOCAL_MACHINE, r"Software\WOW6432Node\Microsoft\Windows\CurrentVersion\Uninstall"),
+    ]
+    for hive, path in registry_locations:
+        try:
+            with winreg.OpenKey(hive, path) as root:
+                for index in range(winreg.QueryInfoKey(root)[0]):
+                    subkey_name = winreg.EnumKey(root, index)
+                    try:
+                        with winreg.OpenKey(root, subkey_name) as subkey:
+                            display_name = winreg.QueryValueEx(subkey, "DisplayName")[0]
+                            if str(display_name).strip().casefold() != "jira reminders":
+                                continue
+                            uninstall = str(winreg.QueryValueEx(subkey, "UninstallString")[0])
+                            product_code = re.search(
+                                r"\{[0-9A-Fa-f-]{36}\}",
+                                uninstall,
+                            )
+                            if product_code:
+                                subprocess.Popen(
+                                    ["msiexec.exe", "/x", product_code.group(0)],
+                                    creationflags=subprocess.CREATE_NO_WINDOW,
+                                )
+                            else:
+                                subprocess.Popen(uninstall)
+                            return True
+                    except OSError:
+                        continue
+        except OSError:
+            continue
     return False

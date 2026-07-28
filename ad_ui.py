@@ -9,7 +9,8 @@ from tkinter import messagebox, ttk
 from datetime import datetime
 
 from ad_automation import (
-    detect_location, detect_domain, build_email, DEFAULT_GROUPS,
+    detect_location, detect_site, detect_location_conflict, detect_address_warning,
+    detect_domain, build_email, DEFAULT_GROUPS,
     find_user_accounts, classify_scenario,
     get_buddy_info, get_account_groups, build_verification_script,
     build_new_joiner_script, build_rejoiner_dual_script,
@@ -155,6 +156,15 @@ class ADSetupWindow(tk.Toplevel):
         self.on_completed = on_completed
         self._buddy_hint = buddy_hint
         self._location = detect_location(ticket.get("office", ""), ticket.get("company_name", ""))
+        self._site = detect_site(ticket.get("office", ""), ticket.get("company_name", ""))
+        self._location_conflict = detect_location_conflict(
+            ticket.get("office", ""),
+            ticket.get("company_name", ""),
+        )
+        self._address_warning = detect_address_warning(
+            ticket.get("office", ""),
+            ticket.get("company_name", ""),
+        )
         self._domain   = detect_domain(ticket.get("company_name", ""))
 
         # AD search results
@@ -276,10 +286,31 @@ class ADSetupWindow(tk.Toplevel):
             tk.Label(row, text=str(self.ticket.get(key, "") or ""), bg=BG, fg=TEXT,
                      font=("Segoe UI", 9, "bold"), anchor="w").pack(side="left")
 
-        tk.Label(sec, text=f"Location: {self._location.title()}  |  "
+        site_label = {
+            "vilnius": "Vilnius",
+            "siauliai": "Šiauliai",
+            "poland": "Poland",
+            "georgia": "GBS",
+        }.get(self._site, self._location.title())
+        tk.Label(sec, text=f"Location: {site_label}  |  "
                            f"Starting groups: {', '.join(DEFAULT_GROUPS[self._location])}",
-                 bg=BG, fg=GRAY, font=("Segoe UI", 8), wraplength=780, justify="left"
-                 ).pack(anchor="w", pady=(6, 0))
+                  bg=BG, fg=GRAY, font=("Segoe UI", 8), wraplength=780, justify="left"
+                  ).pack(anchor="w", pady=(6, 0))
+        for warning in (self._location_conflict, self._address_warning):
+            if not warning:
+                continue
+            tk.Label(
+                sec,
+                text=f"⚠  {warning}",
+                bg="#FFF4E5",
+                fg=ORANGE,
+                font=("Segoe UI", 9, "bold"),
+                wraplength=780,
+                justify="left",
+                anchor="w",
+                padx=8,
+                pady=6,
+            ).pack(fill="x", pady=(6, 0))
 
         # ── 2. Find AD accounts ───────────────────────────────────────────────
         sec2 = self._section(body, "2. Find the account")

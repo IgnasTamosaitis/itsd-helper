@@ -1,0 +1,91 @@
+<Wix xmlns="http://wixtoolset.org/schemas/v4/wxs">
+  <Package
+      Name="Jira Reminders"
+      Manufacturer="Girteka"
+      Version="$(var.ProductVersion)"
+      UpgradeCode="{A9474245-3E17-430C-8E94-7043B8254E6F}"
+      Scope="perUser"
+      InstallerVersion="500"
+      Compressed="yes">
+
+    <SummaryInformation Description="Jira Reminders Windows installer" />
+    <MajorUpgrade
+        DowngradeErrorMessage="A newer version of Jira Reminders is already installed." />
+    <MediaTemplate EmbedCab="yes" />
+
+    <Icon Id="JiraRemindersIcon" SourceFile="$(var.IconSource)" />
+    <Property Id="ARPPRODUCTICON" Value="JiraRemindersIcon" />
+
+    <StandardDirectory Id="LocalAppDataFolder">
+      <Directory Id="GirtekaFolder" Name="Girteka">
+        <Directory Id="INSTALLFOLDER" Name="Jira Reminders">
+          <Component
+              Id="ApplicationFiles"
+              Guid="{06E03E55-A938-4608-8B07-374FC3D245D8}">
+            <File Id="AppExe" Source="$(var.AppSource)">
+              <Shortcut
+                  Id="DesktopShortcut"
+                  Directory="DesktopFolder"
+                  Name="Jira Reminders"
+                  Description="Open Jira Reminders"
+                  WorkingDirectory="INSTALLFOLDER" />
+              <Shortcut
+                  Id="StartupShortcut"
+                  Directory="StartupFolder"
+                  Name="Jira Reminders"
+                  Description="Start Jira Reminders when you sign in"
+                  WorkingDirectory="INSTALLFOLDER" />
+              <Shortcut
+                  Id="StartMenuShortcut"
+                  Directory="ApplicationProgramsFolder"
+                  Name="Jira Reminders"
+                  Description="Open Jira Reminders"
+                  WorkingDirectory="INSTALLFOLDER" />
+            </File>
+            <File Id="VersionFile" Source="$(var.VersionFile)" />
+            <RegistryValue
+                Root="HKCU"
+                Key="Software\Girteka\Jira Reminders"
+                Name="Installed"
+                Type="integer"
+                Value="1"
+                KeyPath="yes" />
+            <RemoveFolder Id="RemoveInstallFolder" On="uninstall" />
+            <RemoveFolder
+                Id="RemoveGirtekaFolder"
+                Directory="GirtekaFolder"
+                On="uninstall" />
+            <RemoveFolder
+                Id="RemoveStartMenuFolder"
+                Directory="ApplicationProgramsFolder"
+                On="uninstall" />
+          </Component>
+        </Directory>
+      </Directory>
+    </StandardDirectory>
+
+    <StandardDirectory Id="DesktopFolder" />
+    <StandardDirectory Id="StartupFolder" />
+    <StandardDirectory Id="ProgramMenuFolder">
+      <Directory Id="ApplicationProgramsFolder" Name="Jira Reminders" />
+    </StandardDirectory>
+
+    <Feature Id="MainFeature" Title="Jira Reminders">
+      <ComponentRef Id="ApplicationFiles" />
+    </Feature>
+
+    <CustomAction
+        Id="LaunchJiraReminders"
+        FileRef="AppExe"
+        ExeCommand="--installed"
+        Execute="immediate"
+        Return="asyncNoWait"
+        Impersonate="yes" />
+    <InstallExecuteSequence>
+      <Custom
+          Action="LaunchJiraReminders"
+          After="InstallFinalize"
+          Condition="NOT Installed AND NOT WIX_UPGRADE_DETECTED AND NOT REMOVE" />
+    </InstallExecuteSequence>
+  </Package>
+</Wix>

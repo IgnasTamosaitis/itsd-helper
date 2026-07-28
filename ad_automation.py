@@ -14,6 +14,7 @@ import re
 import secrets
 import subprocess
 import unicodedata
+from html import unescape
 
 SF_OU_FRAGMENT = "Active_Users_from_SF"   # substring present in the SF provisioning OU
 
@@ -34,21 +35,26 @@ def _nfc(value: str) -> str:
 
 
 def _normalize_manager_name(value: str) -> str:
-    value = _nfc(value).strip()
+    value = unescape(_nfc(value)).strip()
     if not value:
         return ""
+    mailto = re.search(r"mailto:([^'\">\s]+)", value, flags=re.IGNORECASE)
+    if mailto:
+        return mailto.group(1).strip()
+    value = re.sub(r"<[^>]+>", "", value).strip()
     value = re.sub(r"^(hiring\s+manager|manager)\s*:\s*", "", value, flags=re.IGNORECASE)
-    return value.strip()
+    return value.lstrip(": ").strip()
 
 
 def _manager_lookup_lines(manager: str) -> list[str]:
     if not manager:
         return []
+    lookup_field = "EmailAddress" if "@" in manager else "DisplayName"
     return [
         "$mgrDn = $null",
         "$mgrEmail = $null",
         "try {",
-        f"    $mgrMatches = @(Get-ADUser -Filter {{DisplayName -eq '{manager}'}} -Properties DistinguishedName, EmailAddress)",
+        f"    $mgrMatches = @(Get-ADUser -Filter {{{lookup_field} -eq '{manager}'}} -Properties DistinguishedName, EmailAddress)",
         "    if ($mgrMatches.Count -eq 1) {",
         "        $mgrDn    = $mgrMatches[0].DistinguishedName",
         "        $mgrEmail = $mgrMatches[0].EmailAddress",
@@ -148,11 +154,103 @@ def _set_user_attribute_lines(sam: str, email: str, title: str,
 
 # ── Location / domain detection ───────────────────────────────────────────────
 
+def _normalise_location_text(value: str) -> str:
+    """Return punctuation/diacritic-insensitive text for Jira location matching."""
+    value = unicodedata.normalize("NFKD", value or "")
+    value = "".join(ch for ch in value if not unicodedata.combining(ch))
+    value = value.casefold().replace("ł", "l")
+    return re.sub(r"[^a-z0-9]+", " ", value).strip()
+
+
+def _matches_any(value: str, keywords: list[str]) -> bool:
+    padded = f" {_normalise_location_text(value)} "
+    return any(f" {_normalise_location_text(keyword)} " in padded for keyword in keywords)
+
+
+_OFFICE_SITE_KEYWORDS: list[tuple[str, list[str]]] = [
+    ("georgia", ["georgia", "gbs", "tbilisi", "kutaisi", "business services"]),
+    ("poland", ["poland", "warszawa", "warsaw", "krakow", "wroclaw",
+                "poznan", "poznan campus", "poznanska", "sady"]),
+    ("siauliai", ["siauliai", "siauliai campus"]),
+    ("vilnius", ["vilnius", "girteka park", "laisves"]),
+]
+
+_COMPANY_SITE_KEYWORDS: list[tuple[str, list[str]]] = [
+    # Specific locations must precede generic Girteka/ME Trailers/ClassTrucks
+    # matches so Polish and GBS legal entities cannot fall through to Vilnius.
+    ("georgia", ["girteka business services", "business services"]),
+    ("poland", [
+        "girpoltrans", "transeu poland", "eupoltrans", "scanpoltrans",
+        "polservice", "gotrans", "me trailers poland", "classtrucks poland",
+    ]),
+    ("siauliai", [
+        "mireli", "trasis", "girmeta", "termolita", "girtrans",
+        "klp transport", "premium trans", "termotrans",
+    ]),
+    ("vilnius", [
+        "trucks merchant", "willgrow", "gcc", "tndm trucking", "tndm",
+        "girteka nordic", "girteka transport", "girteka group",
+        "girteka logistics", "me trailers", "girteka cargo",
+        "classtrucks", "girteka",
+    ]),
+]
+
+
+def _detect_site_from(value: str, mappings: list[tuple[str, list[str]]]) -> str:
+    for site, keywords in mappings:
+        if _matches_any(value, keywords):
+            return site
+    return ""
+
+
+def detect_site(office: str, company: str = "") -> str:
+    """Detect the physical site, preferring the employee's Jira office field."""
+    return (
+        _detect_site_from(office, _OFFICE_SITE_KEYWORDS)
+        or _detect_site_from(company, _COMPANY_SITE_KEYWORDS)
+    )
+
+
+def detect_location_conflict(office: str, company: str = "") -> str:
+    """Describe a disagreement between independently recognised Jira fields."""
+    office_site = _detect_site_from(office, _OFFICE_SITE_KEYWORDS)
+    company_site = _detect_site_from(company, _COMPANY_SITE_KEYWORDS)
+    if not office_site or not company_site or office_site == company_site:
+        return ""
+    labels = {
+        "vilnius": "Vilnius",
+        "siauliai": "Šiauliai",
+        "poland": "Poland",
+        "georgia": "GBS",
+    }
+    return (
+        f"Office Location indicates {labels[office_site]}, but Company indicates "
+        f"{labels[company_site]}. Office Location was selected; verify before applying."
+    )
+
+
+def detect_address_warning(office: str, company: str = "") -> str:
+    """Warn when a site is known but its exact fixed address is not."""
+    if detect_site(office, company) != "poland":
+        return ""
+    if (
+        _matches_any(office, ["poznanska", "sady"])
+        or _matches_any(company, ["girpoltrans"])
+    ):
+        return ""
+    return (
+        "This is a recognised Polish company, but its exact campus address is not "
+        "confirmed. The Jira office and Poland defaults will be used without "
+        "forcing the Sady street, city, or postal code."
+    )
+
+
 def detect_location(office: str, company: str = "") -> str:
-    text = (office + " " + company).lower()
-    if any(k in text for k in ["poland", "warszawa", "warsaw", "krakow", "wroclaw", "poznan", "poznań", "girpoltrans"]):
+    """Return the regional default-group key used by the AD setup UI."""
+    site = detect_site(office, company)
+    if site == "poland":
         return "poland"
-    if any(k in text for k in ["georgia", "gbs", "tbilisi", "kutaisi", "business services"]):
+    if site == "georgia":
         return "georgia"
     return "lithuania"
 
@@ -180,9 +278,14 @@ _LAISVES_ADDRESS = {
     "ext15":   "SF",
 }
 
-_LAISVES_KEYWORDS = [
-    "gcc", "tndm", "girteka", "me trailer", "classtrucks",
-]
+_SIAULIAI_ADDRESS = {
+    "street":  "Pročiūnų g. 16",
+    "city":    "Šiauliai",
+    "zip":     "77103",
+    "country": "LT",
+    "office":  "Siauliai Campus",
+    "ext15":   "SF",
+}
 
 _GBS_ADDRESS = {
     "street":  "Ilia Chavchavadze Ave. 37L",
@@ -193,10 +296,6 @@ _GBS_ADDRESS = {
     "ext15":   "",
 }
 
-_GBS_KEYWORDS = [
-    "business services",
-]
-
 _POZNAN_ADDRESS = {
     "street":  "Poznańska 4",
     "city":    "Sady",
@@ -206,18 +305,35 @@ _POZNAN_ADDRESS = {
     "ext15":   "",
 }
 
-_POZNAN_KEYWORDS = [
-    "girpoltrans", "poznan", "poznań",
-]
+def detect_company_address(company: str, office: str = "") -> dict:
+    """Return safe AD location overrides derived from real Jira fields.
 
-def detect_company_address(company: str) -> dict:
-    c = company.lower()
-    # GBS must be checked before the generic "girteka" keyword
-    if any(k in c for k in _GBS_KEYWORDS):
+    Office Location is authoritative.  For Polish companies whose exact campus
+    address is unknown, only the Jira office and country are returned so SF
+    street/city/postal data is not replaced with the Sady address.
+    """
+    site = detect_site(office, company)
+    if site == "georgia":
         return _GBS_ADDRESS
-    if any(k in c for k in _POZNAN_KEYWORDS):
-        return _POZNAN_ADDRESS
-    if any(k in c for k in _LAISVES_KEYWORDS):
+    if site == "siauliai":
+        return _SIAULIAI_ADDRESS
+    if site == "poland":
+        # The Sady address is confirmed by the explicit Jira address and by the
+        # existing Girpoltrans mapping, but not for every Polish legal entity.
+        if (
+            _matches_any(office, ["poznanska", "sady"])
+            or _matches_any(company, ["girpoltrans"])
+        ):
+            return _POZNAN_ADDRESS
+        return {
+            "street":  "",
+            "city":    "",
+            "zip":     "",
+            "country": "PL",
+            "office":  (office or "Poznan").strip(),
+            "ext15":   "",
+        }
+    if site == "vilnius":
         return _LAISVES_ADDRESS
     return {}
 
@@ -638,7 +754,10 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
     extensionAttribute10 (manager email), extensionAttribute14 (buddy), password.
     """
     username = _e(sf_account["username"])
-    address  = detect_company_address(ticket.get("company_name", ""))
+    address  = detect_company_address(
+        ticket.get("company_name", ""),
+        ticket.get("office", ""),
+    )
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",
@@ -731,7 +850,10 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
     sf_sam  = _e(sf_account["username"])
     sf_identity = _e(sf_account.get("dn") or sf_account["username"])
     old_sam = _e(old_account["username"])
-    address = detect_company_address(ticket.get("company_name", ""))
+    address = detect_company_address(
+        ticket.get("company_name", ""),
+        ticket.get("office", ""),
+    )
     ea14    = _e((ext_attrs or {}).get("extensionAttribute14", ""))
     ext15   = address.get("ext15", "")
 
@@ -747,7 +869,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         "",
         "# Read all new employment data from SF dummy",
         f"$sfDN = '{sf_identity}'",
-        "$sf = Get-ADUser -Identity $sfDN -Properties EmployeeID,Title,Description,Department,Company,Manager,extensionAttribute5",
+        "$sf = Get-ADUser -Identity $sfDN -Properties EmployeeID,Title,Description,Department,Company,Manager,Office,StreetAddress,City,PostalCode,Country,extensionAttribute5",
         'Write-Host "SF data loaded — EmpID: $($sf.EmployeeID)  Title: $($sf.Title)"',
         "",
         "# Resolve manager email from SF dummy manager DN",
@@ -811,6 +933,21 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         L.append(f"    Country       = '{_e(address['country'])}'")
     L += [
         "}",
+    ]
+    # If a location is recognised but its exact address is not confirmed, keep
+    # the authoritative SF dummy values rather than imposing another campus.
+    for field, sf_field in (
+        ("office", "Office"),
+        ("street", "StreetAddress"),
+        ("city", "City"),
+        ("zip", "PostalCode"),
+        ("country", "Country"),
+    ):
+        if not address.get(field):
+            L.append(
+                f"if ($sf.{sf_field}) {{ $setParams['{sf_field}'] = $sf.{sf_field} }}"
+            )
+    L += [
         "if ($sf.Manager) { $setParams['Manager'] = $sf.Manager }",
         f"Set-ADUser -Identity '{old_sam}' @setParams",
         'Write-Host "OK  Attributes updated"',
@@ -871,7 +1008,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
     title   = _e(ticket.get("position", ""))
     office  = _e(ticket.get("office", ""))
     company = ticket.get("company_name", "")
-    address = detect_company_address(company)
+    address = detect_company_address(company, ticket.get("office", ""))
 
     L = [
         "$cred = Get-Credential -Message 'Enter your AD admin credentials'",

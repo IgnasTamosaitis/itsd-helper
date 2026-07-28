@@ -211,13 +211,16 @@ _CF_MANAGER      = "customfield_10978"
 _CF_REJOINER     = "customfield_14703"
 _CF_PHONE        = "customfield_10113"   # Phone Number (new joiner's phone)
 _CF_COMPANY_NAME = "customfield_10976"   # Company's name
+_CF_COMPANY_READONLY = "customfield_10993"  # Company name (sometimes populated)
+_CF_COUNTRY      = "customfield_14076"
 _CF_SIMILAR_ROLE = "customfield_11436"   # Person who is working in the similar job role
 
 _BASE_FETCH_FIELDS = [
     "summary", "status", "reporter",
     _CF_FIRST_NAME, _CF_LAST_NAME,
     _CF_POSITION, _CF_OFFICE, _CF_MANAGER, _CF_REJOINER,
-    _CF_PHONE, _CF_COMPANY_NAME, _CF_SIMILAR_ROLE,
+    _CF_PHONE, _CF_COMPANY_NAME, _CF_COMPANY_READONLY, _CF_COUNTRY,
+    _CF_SIMILAR_ROLE,
 ]
 
 def _parse_start_date(raw: str):
@@ -262,6 +265,20 @@ def _jira_userpicker_to_buddy_candidate(raw) -> dict | None:
         "source": "similar_role_field",
         "jira_account_id": account_id,
     }
+
+
+def _jira_scalar_text(raw) -> str:
+    if raw is None:
+        return ""
+    if isinstance(raw, str):
+        value = raw.strip()
+        return "" if value.casefold() in {"none", "n/a", "-"} else value
+    if isinstance(raw, dict):
+        for key in ("value", "name", "displayName"):
+            if raw.get(key):
+                return str(raw[key]).strip()
+        return ""
+    return str(raw).strip()
 
 
 class JiraClient:
@@ -396,7 +413,11 @@ class JiraClient:
                 rejoiner = str(rejoiner_raw).strip()
 
             phone        = (f.get(_CF_PHONE)        or "").strip()
-            company_name = (f.get(_CF_COMPANY_NAME) or "").strip()
+            company_name = (
+                _jira_scalar_text(f.get(_CF_COMPANY_NAME))
+                or _jira_scalar_text(f.get(_CF_COMPANY_READONLY))
+            )
+            country = _jira_scalar_text(f.get(_CF_COUNTRY))
             similar_role_buddy = _jira_userpicker_to_buddy_candidate(f.get(_CF_SIMILAR_ROLE))
 
             tickets.append(
@@ -413,6 +434,7 @@ class JiraClient:
                     "rejoiner":     rejoiner,
                     "phone":        phone,
                     "company_name": company_name,
+                    "country":      country,
                     "similar_role_buddy": similar_role_buddy,
                     "status":         (f.get("status") or {}).get("name", ""),
                     "start_date":     start_date,
