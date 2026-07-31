@@ -221,11 +221,16 @@ class App:
 
     def _update_check_loop(self) -> None:
         time.sleep(5)  # let the app finish starting before hitting the network
-        self._do_update_check()
+        while True:
+            self._do_update_check()
+            time.sleep(60 * 60)  # keep long-running tray sessions update-aware
 
     def _do_update_check(self) -> None:
         release = updater.check_for_update()
-        if release:
+        if release and (
+            not self._pending_update
+            or self._pending_update.get("version") != release.get("version")
+        ):
             self._ui_queue.put(("update_available", release))
 
     def _handle_update_available(self, release: dict) -> None:

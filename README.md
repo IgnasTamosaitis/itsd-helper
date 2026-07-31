@@ -4,6 +4,11 @@ A Windows desktop tool for ITSD that connects to Jira and centralises everything
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
+> **Current release: v1.3.1**<br>
+> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.3.1/Jira-Reminders-1.3.1.msi)
+> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.3.1)
+> · [Open the team setup KB](docs/Jira-Reminders-KB.md)
+
 ---
 
 ## What the app does
@@ -181,7 +186,7 @@ run any scripts.
 
 ## Installation
 
-1. Download the latest **`Jira-Reminders-x.y.z.msi`** from the GitHub release
+1. Download [**`Jira-Reminders-1.3.1.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.3.1/Jira-Reminders-1.3.1.msi)
 2. Double-click the MSI and complete the short Windows Installer flow
 3. Jira Reminders opens automatically at the first-time setup screen
 
@@ -191,6 +196,16 @@ normally required. It creates:
 - a Desktop shortcut
 - a Start menu shortcut
 - a Windows Startup shortcut, so the app launches whenever that user signs in
+
+The current installer is not Authenticode-signed, so Windows may display
+**Unknown publisher**. Only continue when the file was downloaded from the
+official release link above. If company policy blocks the installation, contact
+the application owner instead of bypassing the policy.
+
+For colleague-facing instructions, troubleshooting, supported locations, and
+security guidance, use the complete [Jira Reminders team KB](docs/Jira-Reminders-KB.md).
+A [Word version](docs/Jira-Reminders-KB.docx) is also included for direct import
+into Confluence.
 
 ---
 
@@ -202,7 +217,7 @@ The normal setup asks for:
 | Field | What to enter |
 |---|---|
 | Atlassian email | Your Girteka Atlassian account email; the app tries to pre-fill it from Windows |
-| Jira API token | Your token from the linked Atlassian token page |
+| Jira API token | A classic/unscoped token from the linked Atlassian token page |
 | Snipe-IT API token | Optional; required only for assigned-asset visibility |
 | Notification timing | How many days before a start date reminders begin |
 

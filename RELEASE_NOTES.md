@@ -2,6 +2,15 @@
 
 ---
 
+## v1.3.1 - AD safeguards and team setup guide
+
+- Added Power BI Pro to the restricted AD groups that require explicit review
+- Added a complete team installation and first-time setup knowledge base in Markdown and Word formats
+- Added hourly update checks so already-running tray sessions prompt when a newer installer is published
+- Updated installation guidance with direct installer links, classic Jira API token requirements, and unsigned-installer safety notes
+
+---
+
 ## v1.3.0 - Multi-location onboarding and Windows installer
 
 - Added office-first onboarding detection for Vilnius, Šiauliai, Poland, and GBS

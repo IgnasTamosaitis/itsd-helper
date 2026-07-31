@@ -42,6 +42,7 @@ SCENARIO_LABELS = {
 RESTRICTED_GROUP_NAMES = {
     "Microsoft 365 Business Premium",
     "Power BI Premium Per User license",
+    "Power BI Pro license",
     "Bitwarden Access",
     "VISIO_Plan_2",
     "M365 Add-In Microsoft Visio Data Visualizer",
