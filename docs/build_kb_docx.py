@@ -119,7 +119,7 @@ def _configure_document(document: Document) -> None:
 
     footer = section.footer.paragraphs[0]
     footer.alignment = 2
-    run = footer.add_run("Jira Reminders KB  |  Version 1.3.1  |  31 July 2026")
+    run = footer.add_run("Jira Reminders KB  |  Version 1.4.0  |  4 August 2026")
     run.font.name = "Segoe UI"
     run.font.size = Pt(8)
     run.font.color.rgb = RGBColor.from_string(GRAY)

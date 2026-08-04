@@ -2,13 +2,14 @@ import re
 import subprocess
 import threading
 import tkinter as tk
-from tkinter import messagebox
+from tkinter import messagebox, ttk
 import webbrowser
 from datetime import date
 import unicodedata
 
-from jira_client import extract_buddies_from_comments, is_sam_account
+from jira_client import DEFAULT_MOVER_JQL, extract_buddies_from_comments, is_sam_account
 from ad_automation import find_user_accounts, classify_scenario
+from mover_ui import MoversPanel
 
 TASKS = [
     "Active Directory account setup",
@@ -40,7 +41,7 @@ PRIORITY_COMPANY_COLOR = RED
 
 class MainWindow(tk.Toplevel):
     def __init__(self, parent, tickets: list, storage, jira_client, on_refresh,
-                 snipeit=None):
+                 snipeit=None, movers: list | None = None):
         super().__init__(parent)
         self.tickets   = tickets
         self.storage   = storage
@@ -69,6 +70,8 @@ class MainWindow(tk.Toplevel):
         self._load_manual_buddies()
         self._load_dismissed_buddies()
         self._snipeit = snipeit
+        self.movers = movers or []
+        self._movers_panel: MoversPanel | None = None
 
         self.title("ITSD Jira Helper")
         self.geometry("980x620")
@@ -94,7 +97,20 @@ class MainWindow(tk.Toplevel):
         tk.Frame(self, bg=BORDER, height=1).pack(fill="x")
 
         self._main_frame = tk.Frame(self, bg=BG)
-        self._build_joiners_tab(self._main_frame)
+        style = ttk.Style(self)
+        style.configure("Main.TNotebook", background=BG, borderwidth=0, tabmargins=(12, 8, 0, 0))
+        style.configure("Main.TNotebook.Tab", font=("Segoe UI", 9, "bold"), padding=(18, 8))
+        notebook = ttk.Notebook(self._main_frame, style="Main.TNotebook")
+        joiners_tab = tk.Frame(notebook, bg=BG)
+        movers_tab = tk.Frame(notebook, bg=BG)
+        notebook.add(joiners_tab, text="  New joiners  ")
+        notebook.add(movers_tab, text="  Movers  ")
+        self._build_joiners_tab(joiners_tab)
+        self._movers_panel = MoversPanel(
+            movers_tab, self.movers, self.storage, self.jira, self.on_refresh
+        )
+        self._movers_panel.pack(fill="both", expand=True)
+        notebook.pack(fill="both", expand=True)
         self._main_frame.pack(fill="both", expand=True)
 
     def show_update_banner(self, version: str, on_install) -> None:
@@ -1086,6 +1102,11 @@ class MainWindow(tk.Toplevel):
         self._update_ad_button()
         self._update_ask_btn()
 
+    def update_movers(self, movers: list):
+        self.movers = movers
+        if self._movers_panel:
+            self._movers_panel.update_movers(movers)
+
     def _show_joiner_snipe_assets(self, t: dict, parent: tk.Frame, column: int = 1):
         box = tk.Frame(parent, bg="#E9F2FF", highlightbackground=ACCENT,
                        highlightthickness=1)
@@ -1455,6 +1476,7 @@ class SetupDialog(tk.Toplevel):
         "api_token":             "",
         "jql":                   'assignee = currentUser() AND issuetype = "SF: Employee onboarding" AND status in (Open, "In Progress", Pending)',
         "date_field":            "customfield_10980",
+        "mover_jql":             DEFAULT_MOVER_JQL,
         "snipeit_url":           "https://inventory.girteka.eu",
         "snipeit_token":         "",
         "remind_days_before":    "3",
@@ -1680,6 +1702,12 @@ class SetupDialog(tk.Toplevel):
         )
         self._add_field(
             self._advanced,
+            "Assigned mover tickets JQL",
+            "mover_jql",
+            hint="Employee moving tickets assigned to the current user",
+        )
+        self._add_field(
+            self._advanced,
             "Snipe-IT URL",
             "snipeit_url",
             hint="Managed default — normally do not change",
@@ -1749,6 +1777,7 @@ class SetupDialog(tk.Toplevel):
             "api_token":              self._vars["api_token"].get().strip(),
             "jql":                    self._vars["jql"].get().strip(),
             "date_field":             self._vars["date_field"].get().strip() or "customfield_10980",
+            "mover_jql":              self._vars["mover_jql"].get().strip() or DEFAULT_MOVER_JQL,
             "snipeit_url":            self._vars["snipeit_url"].get().strip().rstrip("/"),
             "snipeit_token":          self._vars["snipeit_token"].get().strip(),
             "remind_days_before":     int(self._vars["remind_days_before"].get() or 3),
@@ -1814,20 +1843,17 @@ class SetupDialog(tk.Toplevel):
 
 class AskReporterDialog(tk.Toplevel):
     _TEMPLATE = (
-        "Hello, @manager,\n\n"
+        "Hello, @manager,\n"
         "Could you please let us know the name of an existing employee with similar "
-        "access rights that we can use as a template for {name}'s account setup? "
-        "Also, please specify any additional applications, mailboxes, or system access "
-        "required.\n\n"
+        "access rights that we can use as a template for {name}'s account setup?\n"
         "Thank you."
     )
     _TEMPLATE_DISABLED_BUDDY = (
-        "Hello, @manager,\n\n"
+        "Hello, @manager,\n"
         "{buddy_name} is no longer working, so we cannot use them as a buddy, because "
         "the account is disabled. Could you please let us know the name of an existing "
         "employee with similar access rights that we can use as a template for {name}'s "
-        "account setup? Also, please specify any additional applications, mailboxes, or "
-        "system access required.\n\n"
+        "account setup?\n"
         "Thank you."
     )
 

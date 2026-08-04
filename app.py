@@ -12,7 +12,7 @@ from datetime import date, datetime, timedelta
 import pystray
 from PIL import Image, ImageDraw
 
-from jira_client import JiraClient
+from jira_client import DEFAULT_MOVER_JQL, JiraClient
 from snipeit_client import SnipeITClient
 from storage import TaskStorage, load_config, save_config
 from ui import MainWindow, SetupDialog, TASKS
@@ -58,6 +58,7 @@ class App:
 
         self._ui_queue: queue.Queue = queue.Queue()
         self._tickets: list[dict] = []
+        self._movers: list[dict] = []
         self._tickets_lock = threading.Lock()
         self._window: MainWindow | None = None
         self._jira: JiraClient | None = None
@@ -136,7 +137,17 @@ class App:
             self._ui_queue.put(("update_tickets", tickets))
             self._send_per_ticket_notifications(tickets)
         except Exception as e:
-            print(f"[poll] {e}")
+            print(f"[poll joiners] {e}")
+        try:
+            movers = self._jira.get_mover_tickets(
+                self._config.get("mover_jql", DEFAULT_MOVER_JQL)
+            )
+            with self._tickets_lock:
+                self._movers = movers
+            self._ui_queue.put(("update_movers", movers))
+            self._send_mover_notifications(movers)
+        except Exception as e:
+            print(f"[poll movers] {e}")
 
     def _send_per_ticket_notifications(self, tickets: list[dict]) -> None:
         today  = date.today()
@@ -164,6 +175,23 @@ class App:
             )
             self._storage.mark_notified(t["id"])
 
+    def _send_mover_notifications(self, movers: list[dict]) -> None:
+        today = date.today()
+        remind = int(self._config.get("remind_days_before", 3))
+        for mover in movers:
+            effective = mover.get("effective_date")
+            if effective is None:
+                continue
+            delta = (effective - today).days
+            if delta < 0 or delta > remind or self._storage.notified_today(mover["id"]):
+                continue
+            when = "is effective TODAY" if delta == 0 else (
+                "is effective TOMORROW" if delta == 1 else f"is effective in {delta} day(s)"
+            )
+            ready = "AD move is verified." if self._storage.ad_setup_done(mover["id"]) else "AD move is pending."
+            _notify(f"Employee Mover: {mover['name']}", f"{when}. {ready}")
+            self._storage.mark_notified(mover["id"])
+
     # ── Morning summary ───────────────────────────────────────────────────────
 
     def _morning_summary_loop(self) -> None:
@@ -185,21 +213,32 @@ class App:
                     self._config.get("jql", ""),
                     self._config.get("date_field", "customfield_10980"),
                 )
+                movers = self._jira.get_mover_tickets(
+                    self._config.get("mover_jql", DEFAULT_MOVER_JQL)
+                )
                 with self._tickets_lock:
                     self._tickets = tickets
+                    self._movers = movers
                 self._ui_queue.put(("update_tickets", tickets))
+                self._ui_queue.put(("update_movers", movers))
             except Exception:
                 pass
 
         today        = date.today()
         with self._tickets_lock:
             tickets_snapshot = list(self._tickets)
+            movers_snapshot = list(self._movers)
         week_tickets = [
             t for t in tickets_snapshot
             if t.get("start_date") and 0 <= (t["start_date"] - today).days <= 7
         ]
 
-        if not week_tickets:
+        week_movers = [
+            t for t in movers_snapshot
+            if t.get("effective_date") and 0 <= (t["effective_date"] - today).days <= 7
+        ]
+
+        if not week_tickets and not week_movers:
             self._storage.mark_morning_summary_sent()
             return
 
@@ -210,9 +249,16 @@ class App:
             when  = "TODAY" if delta == 0 else ("Tomorrow" if delta == 1
                     else t["start_date"].strftime("%b %d"))
             lines.append(f"{when}: {t['name']} [{done}/{len(TASKS)} tasks]")
+        for mover in week_movers:
+            delta = (mover["effective_date"] - today).days
+            when = "TODAY" if delta == 0 else (
+                "Tomorrow" if delta == 1 else mover["effective_date"].strftime("%b %d")
+            )
+            state = "AD ready" if self._storage.ad_setup_done(mover["id"]) else "AD pending"
+            lines.append(f"{when}: {mover['name']} [Mover - {state}]")
 
         _notify(
-            f"Good morning - {len(week_tickets)} joiner(s) this week",
+            f"Good morning - {len(week_tickets)} joiner(s), {len(week_movers)} mover(s)",
             "\n".join(lines),
         )
         self._storage.mark_morning_summary_sent()
@@ -316,6 +362,8 @@ class App:
                     self._show_window()
                 elif cmd == "update_tickets" and self._window:
                     self._window.update_tickets(args[0])
+                elif cmd == "update_movers" and self._window:
+                    self._window.update_movers(args[0])
                 elif cmd == "open_settings":
                     self._open_settings()
                 elif cmd == "update_available":
@@ -341,6 +389,7 @@ class App:
             self._jira,
             on_refresh=self._manual_refresh,
             snipeit=self._snipeit,
+            movers=self._movers,
         )
         self._window.lift()
         self._window.focus_force()

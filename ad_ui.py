@@ -16,6 +16,7 @@ from ad_automation import (
     build_new_joiner_script, build_rejoiner_dual_script,
     build_rejoiner_single_script, run_ps,
 )
+from group_policy import is_blocked_group, is_redundant_group, is_restricted_group
 
 BG     = "#F7F8FA"
 WHITE  = "#FFFFFF"
@@ -36,50 +37,6 @@ SCENARIO_LABELS = {
     "rejoiner_single": ("Rejoiner - single existing account", ORANGE),
     "unknown":         ("Needs manual review", RED),
 }
-
-# Approval-only groups must not be copied from a buddy without a separate
-# approved request. Match by exact AD group name (case-insensitive).
-RESTRICTED_GROUP_NAMES = {
-    "Microsoft 365 Business Premium",
-    "Power BI Premium Per User license",
-    "Power BI Pro license",
-    "Bitwarden Access",
-    "VISIO_Plan_2",
-    "M365 Add-In Microsoft Visio Data Visualizer",
-    "M365 Add-In Breaktime",
-    "M365 Add-In Power BI",
-    "M365 Add-in Claude by Anthropic for Excel",
-    "M365 Add-In Odoo for Outlook",
-    "M365 Add-In SAP Analytics Cloud for Office",
-    "Power BI PowerPoint Add in",
-    "Test Add new users without teams policy",
-    "Intune Managed devices (HASH manually add)",
-    "App - Users - Salesforce ClassTruck",
-    "App - Users - Salesforce Service Cloud GL PROD",
-    "App - Admins - Salesforce Sales Cloud GL UAT",
-    "App - Users - Salesforce Sales Cloud GL PROD",
-    "App - Users - Salesforce Service Cloud GL SAT",
-    "App - Admins - Salesforce Service Cloud GL SAT",
-    "App - Admins - Salesforce Service Cloud GL PROD",
-    "App - Users - Salesforce Sales Cloud GL UAT",
-    "App - Users - Salesforce Service Cloud GL UAT",
-    "App - Admins - Salesforce Sales Cloud GL SIT",
-    "App - Admins - Salesforce Service Cloud GL UAT",
-    "App - Users - Salesforce Sales Cloud GL SIT",
-    "App - Admins - Salesforce Sales Cloud GL PROD",
-    "App - Users - Salesforce Sales Cloud GL PRE-PROD",
-    "App - Admins - Salesforce Sales Cloud GL PRE-PROD",
-}
-RESTRICTED_GROUP_KEYS = {name.casefold() for name in RESTRICTED_GROUP_NAMES}
-
-# Redundant groups are intentionally blocked as well, but they are shown as
-# useless rather than approval-only.
-REDUNDANT_GROUP_NAMES = {
-    "Teams VLS access policy applied",
-    "RDS-Disabled",
-}
-REDUNDANT_GROUP_KEYS = {name.casefold() for name in REDUNDANT_GROUP_NAMES}
-
 
 class BusyDialog(tk.Toplevel):
     def __init__(self, parent, title: str, message: str):
@@ -134,18 +91,6 @@ class BusyDialog(tk.Toplevel):
             self.destroy()
         except tk.TclError:
             pass
-
-
-def is_restricted_group(group_name: str) -> bool:
-    return (group_name or "").strip().casefold() in RESTRICTED_GROUP_KEYS
-
-
-def is_redundant_group(group_name: str) -> bool:
-    return (group_name or "").strip().casefold() in REDUNDANT_GROUP_KEYS
-
-
-def is_blocked_group(group_name: str) -> bool:
-    return is_restricted_group(group_name) or is_redundant_group(group_name)
 
 
 class ADSetupWindow(tk.Toplevel):

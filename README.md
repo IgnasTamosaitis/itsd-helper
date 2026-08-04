@@ -4,9 +4,9 @@ A Windows desktop tool for ITSD that connects to Jira and centralises everything
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
-> **Current release: v1.3.1**<br>
-> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.3.1/Jira-Reminders-1.3.1.msi)
-> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.3.1)
+> **Current release: v1.4.0**<br>
+> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi)
+> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0)
 > · [Open the team setup KB](docs/Jira-Reminders-KB.md)
 
 ---
@@ -14,13 +14,39 @@ The app runs silently in the system tray and sends you Windows notifications so 
 ## What the app does
 
 ### Ticket overview
-The main window shows upcoming onboarding tickets and the AD workflow.
+The main window has separate **New joiners** and **Movers** tabs for upcoming
+onboarding and employee-position-change tickets.
 
 The joiner list shows the person's name, their start date, how many checklist tasks have been completed, and whether their AD account has been set up. Tickets are colour-coded by urgency:
 
 - **Red** — starts today or tomorrow
 - **Green** — starts within the next 7 days
 - **Grey** — already started
+
+### Employee movers
+
+The Movers tab reads assigned Jira issues of type **Employee moving**. It shows
+the effective date, current and new title, new company and manager, AD buddy,
+and any separate Axapta-rights template.
+
+The dedicated **Prepare AD move** workflow:
+
+- resolves the mover, buddy, and Jira manager as separate enabled AD accounts;
+- uses Buddy as the AD template, falling back to Axapta rights only when Buddy
+  is empty;
+- shows an Axapta follow-up warning when Buddy and Axapta rights differ;
+- previews the exact group additions/removals, OU move, and attribute changes;
+- makes Title and Description match the Jira new title;
+- copies Department and OU from the buddy;
+- sets Company and Manager from Jira and derives the address from the existing
+  company/location map;
+- verifies the final OU, direct groups, manager, organisation fields, and
+  address before recording the move as complete.
+
+Approval-only and redundant buddy groups remain blocked. A manager mismatch,
+ambiguous or disabled account, unknown address, or AD change after preview
+blocks execution until it is reviewed. The workflow does not reset passwords,
+change email addresses, or perform Axapta work.
 
 ### Detail panel
 Clicking a person opens their full detail view on the right side, showing:
@@ -186,7 +212,7 @@ run any scripts.
 
 ## Installation
 
-1. Download [**`Jira-Reminders-1.3.1.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.3.1/Jira-Reminders-1.3.1.msi)
+1. Download [**`Jira-Reminders-1.4.0.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi)
 2. Double-click the MSI and complete the short Windows Installer flow
 3. Jira Reminders opens automatically at the first-time setup screen
 

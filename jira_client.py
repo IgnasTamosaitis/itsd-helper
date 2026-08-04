@@ -4,6 +4,11 @@ import requests
 from datetime import date, timedelta
 from dateutil.parser import parse as parse_date
 
+DEFAULT_MOVER_JQL = (
+    'assignee = currentUser() AND issuetype = "Employee moving" '
+    'AND status in (Open, "In Progress", Pending)'
+)
+
 
 def _adf_to_text(node: dict) -> str:
     """Recursively extract plain text from an Atlassian Document Format node."""
@@ -241,7 +246,7 @@ def _parse_start_date(raw: str):
         return None
 
 
-def _jira_userpicker_to_buddy_candidate(raw) -> dict | None:
+def _jira_userpicker_to_buddy_candidate(raw, source: str = "similar_role_field") -> dict | None:
     """Return a buddy candidate dict from a Jira user picker field value."""
     if not raw:
         return None
@@ -262,9 +267,58 @@ def _jira_userpicker_to_buddy_candidate(raw) -> dict | None:
         "name": display_name,
         "author": "Jira field",
         "date": "",
-        "source": "similar_role_field",
+        "source": source,
         "jira_account_id": account_id,
     }
+
+
+def _same_jira_user(left: dict | None, right: dict | None) -> bool:
+    """Compare normalized Jira user-picker values without trusting display casing."""
+    if not left or not right:
+        return False
+    left_id = (left.get("jira_account_id") or "").strip()
+    right_id = (right.get("jira_account_id") or "").strip()
+    if left_id and right_id:
+        return left_id == right_id
+    return (left.get("name") or "").strip().casefold() == (
+        right.get("name") or ""
+    ).strip().casefold()
+
+
+def resolve_mover_buddy(buddy: dict | None, axapta_rights: dict | None) -> dict:
+    """Apply the mover ticket's Buddy/Axapta precedence rules.
+
+    The returned mapping contains ``ad_buddy`` and an optional ``axapta_notice``.
+    Keeping this decision pure makes it independently testable and ensures the
+    list view and the AD wizard always make the same choice.
+    """
+    if buddy and axapta_rights:
+        if _same_jira_user(buddy, axapta_rights):
+            return {
+                "ad_buddy": {**buddy, "source": "buddy_and_axapta_fields"},
+                "axapta_notice": "",
+                "confirmed_by_both": True,
+            }
+        return {
+            "ad_buddy": {**buddy, "source": "buddy_field"},
+            "axapta_notice": (
+                "Axapta rights must match " + (axapta_rights.get("name") or "the Axapta rights user")
+            ),
+            "confirmed_by_both": False,
+        }
+    if buddy:
+        return {
+            "ad_buddy": {**buddy, "source": "buddy_field"},
+            "axapta_notice": "",
+            "confirmed_by_both": False,
+        }
+    if axapta_rights:
+        return {
+            "ad_buddy": {**axapta_rights, "source": "axapta_fallback"},
+            "axapta_notice": "",
+            "confirmed_by_both": False,
+        }
+    return {"ad_buddy": None, "axapta_notice": "", "confirmed_by_both": False}
 
 
 def _jira_scalar_text(raw) -> str:
@@ -278,6 +332,8 @@ def _jira_scalar_text(raw) -> str:
             if raw.get(key):
                 return str(raw[key]).strip()
         return ""
+    if isinstance(raw, list):
+        return ", ".join(filter(None, (_jira_scalar_text(item) for item in raw)))
     return str(raw).strip()
 
 
@@ -441,6 +497,7 @@ class JiraClient:
                     "url":            f"{self.base}/browse/{issue['key']}",
                     "reporter_id":    reporter_id,
                     "reporter_name":  reporter_name,
+                    "kind":             "joiner",
                 }
             )
 
@@ -451,4 +508,94 @@ class JiraClient:
         cutoff = date.today() - timedelta(days=1)
         tickets = [t for t in tickets if t["start_date"] is None or t["start_date"] >= cutoff]
 
+        return tickets
+
+    def get_mover_tickets(self, jql: str) -> list[dict]:
+        """Fetch assigned employee-moving tickets using their dedicated schema."""
+        fields = [
+            "summary", "status", "reporter", "issuetype",
+            "customfield_11213",  # Employee
+            "customfield_10192",  # Start Date (1)
+            "customfield_10996",  # Current job title
+            "customfield_11167",  # New job title
+            "customfield_10992",  # Current department
+            "customfield_10993",  # New company
+            "customfield_10057",  # New manager
+            "customfield_10191",  # Office Location
+            "customfield_10145",  # New Office Location
+            "customfield_10894",  # Buddy
+            "customfield_10900",  # Axapta rights
+            "customfield_10899",  # Axapta access
+            "customfield_14076",  # Country
+        ]
+        r = self.session.get(
+            f"{self.base}/rest/api/3/search/jql",
+            params={"jql": jql, "fields": ",".join(fields), "maxResults": 50},
+            timeout=15,
+        )
+        r.raise_for_status()
+
+        tickets: list[dict] = []
+        for issue in r.json().get("issues", []):
+            f = issue.get("fields") or {}
+            issue_type = (f.get("issuetype") or {}).get("name", "")
+            if issue_type and issue_type.casefold() != "employee moving":
+                continue
+            employee = _jira_userpicker_to_buddy_candidate(
+                f.get("customfield_11213"), "employee_field"
+            )
+            buddy = _jira_userpicker_to_buddy_candidate(
+                f.get("customfield_10894"), "buddy_field"
+            )
+            axapta = _jira_userpicker_to_buddy_candidate(
+                f.get("customfield_10900"), "axapta_rights_field"
+            )
+            buddy_decision = resolve_mover_buddy(buddy, axapta)
+            reporter = f.get("reporter") or {}
+            manager = _jira_userpicker_to_buddy_candidate(
+                f.get("customfield_10057"), "manager_field"
+            )
+            new_office = _jira_scalar_text(f.get("customfield_10145"))
+            current_office = _jira_scalar_text(f.get("customfield_10191"))
+            effective_date = _parse_start_date(
+                _jira_scalar_text(f.get("customfield_10192"))
+            )
+            name = (employee or {}).get("name") or f.get("summary") or issue["key"]
+
+            tickets.append({
+                "id": issue["id"],
+                "key": issue["key"],
+                "summary": f.get("summary", issue["key"]),
+                "kind": "mover",
+                "name": name,
+                "employee": employee,
+                "effective_date": effective_date,
+                # Keep start_date as a compatibility alias for reminder/storage helpers.
+                "start_date": effective_date,
+                "current_position": _jira_scalar_text(f.get("customfield_10996")),
+                "new_position": _jira_scalar_text(f.get("customfield_11167")),
+                "position": _jira_scalar_text(f.get("customfield_11167")),
+                "current_department": _jira_scalar_text(f.get("customfield_10992")),
+                "company_name": _jira_scalar_text(f.get("customfield_10993")),
+                "manager_user": manager,
+                "manager": (manager or {}).get("name", ""),
+                "current_office": current_office,
+                "new_office": new_office,
+                "office": new_office or current_office,
+                "country": _jira_scalar_text(f.get("customfield_14076")),
+                "buddy_field": buddy,
+                "axapta_rights": axapta,
+                "ad_buddy": buddy_decision["ad_buddy"],
+                "axapta_notice": buddy_decision["axapta_notice"],
+                "buddy_confirmed_by_both": buddy_decision["confirmed_by_both"],
+                "axapta_access": _jira_scalar_text(f.get("customfield_10899")),
+                "status": (f.get("status") or {}).get("name", ""),
+                "url": f"{self.base}/browse/{issue['key']}",
+                "reporter_id": reporter.get("accountId", ""),
+                "reporter_name": reporter.get("displayName", ""),
+            })
+
+        tickets.sort(key=lambda t: t["effective_date"] or date.max)
+        # Keep overdue movers visible until Jira leaves the configured active
+        # statuses; an unfinished AD move must not disappear after its date.
         return tickets

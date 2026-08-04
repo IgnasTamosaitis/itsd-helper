@@ -2,6 +2,20 @@
 
 ---
 
+## v1.4.0 - Employee movers
+
+- Added a dedicated Movers tab for Jira `Employee moving` tickets
+- Added Buddy/Axapta-rights reconciliation with visible follow-up warnings
+- Added a mover-specific AD workflow for exact group replacement, buddy OU and
+  Department, Jira title/company/manager, and mapped company addresses
+- Added manager cross-checking, restricted-group enforcement, pre-apply drift
+  detection, PowerShell preview, audit logging, and final-state verification
+- Added mover reminders and inclusion in the morning summary
+- Aligned the Movers workspace with the New Joiners layout and components,
+  while retaining cached comment loading and the smoother tabbed AD review wizard
+
+---
+
 ## v1.3.1 - AD safeguards and team setup guide
 
 - Added Power BI Pro to the restricted AD groups that require explicit review

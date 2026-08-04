@@ -4,22 +4,41 @@
 |---|---|
 | Audience | IT Service Desk team members handling employee onboarding |
 | Supported locations | Vilnius, Šiauliai, Poznań / Poland, and GBS |
-| Application version | 1.3.1 |
+| Application version | 1.4.0 |
 | Owner | IT Service Desk |
 | Last updated | 31 July 2026 |
 | Estimated setup time | 5–10 minutes |
 
 ## Purpose
 
-Jira Reminders brings assigned employee-onboarding tickets, reminders, the
-onboarding checklist, Active Directory setup, Jira comments, and optional
-Snipe-IT asset information into one Windows application.
+Jira Reminders brings assigned employee-onboarding and employee-moving tickets,
+reminders, the onboarding checklist, Active Directory setup, Jira comments,
+and optional Snipe-IT asset information into one Windows application.
 
 The application runs in the Windows system tray and starts automatically when
 you sign in.
 
-> **Ticket scope:** Jira Reminders displays onboarding tickets assigned to the
-> signed-in Jira user. It does not display the entire location queue.
+> **Ticket scope:** Jira Reminders displays onboarding and employee-moving
+> tickets assigned to the signed-in Jira user. It does not display the entire
+> location queue.
+
+## Employee movers
+
+Use the **Movers** tab for assigned Jira issues of type **Employee moving**.
+Review the effective date, new job title, company, manager, Buddy, and Axapta
+rights before selecting **Prepare AD move**.
+
+The mover workflow changes only Active Directory. It aligns copyable direct
+groups and the OU with the Buddy, uses the Buddy's Department, applies the Jira
+new title to both Title and Description, and applies the Jira Company and
+Manager. Address fields come from the same validated company/location mappings
+used for onboarding. Email, password, UPN, and proxy addresses are preserved.
+
+If Buddy and Axapta rights differ, Buddy remains the AD template and the app
+shows the separate Axapta user as a follow-up. If Buddy is empty, Axapta rights
+is used as the AD buddy. The app blocks an ambiguous or disabled account,
+unknown address, unacknowledged manager mismatch, invalid OU, or stale preview.
+Completion is saved only after final AD verification passes.
 
 ## Before you start
 
@@ -37,9 +56,9 @@ You do **not** need to install Python, download repository source files, run
 ## 1. Download and install Jira Reminders
 
 1. Open the official
-   [Jira Reminders v1.3.1 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.3.1).
+   [Jira Reminders v1.4.0 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0).
 2. Download
-   [Jira-Reminders-1.3.1.msi](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.3.1/Jira-Reminders-1.3.1.msi).
+   [Jira-Reminders-1.4.0.msi](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi).
 3. Open the downloaded MSI.
 4. Complete the Windows Installer process.
 5. Wait for **Welcome to Jira Reminders** to open automatically.
@@ -50,7 +69,7 @@ The installer creates:
 - a **Jira Reminders** Start menu shortcut; and
 - a Windows Startup shortcut so the app launches whenever you sign in.
 
-> **Unknown publisher:** Version 1.3.1 is not Authenticode-signed, so Windows
+> **Unknown publisher:** Version 1.4.0 is not Authenticode-signed, so Windows
 > may show an **Unknown publisher** message. Only continue when the MSI was
 > downloaded from the official GitHub release above. If company policy blocks
 > it, contact the application owner instead of bypassing the policy.
@@ -233,5 +252,5 @@ Never provide your Jira or Snipe-IT API token.
 
 ## References
 
-- [Jira Reminders v1.3.1 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.3.1)
+- [Jira Reminders v1.4.0 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0)
 - [Atlassian — Manage API tokens for your account](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)
