@@ -10,9 +10,11 @@ Scenarios detected by searching AD by first+last name:
   rejoiner_single - one account, NOT in SF_OU (disabled or already active)
   unknown         - unexpected state, needs manual review
 """
+import os
 import re
 import secrets
 import subprocess
+import tempfile
 import unicodedata
 from html import unescape
 
@@ -385,9 +387,9 @@ def generate_password(length: int = 10) -> str:
 
 def run_ps(script: str, timeout: int = 90) -> tuple[str, str, int]:
     script = (
-        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8; "
-        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8; "
-        "$OutputEncoding = [System.Text.Encoding]::UTF8; "
+        "[Console]::InputEncoding = [System.Text.Encoding]::UTF8;\n"
+        "[Console]::OutputEncoding = [System.Text.Encoding]::UTF8;\n"
+        "$OutputEncoding = [System.Text.Encoding]::UTF8;\n"
         + script
     )
     creationflags = getattr(subprocess, "CREATE_NO_WINDOW", 0)
@@ -396,14 +398,39 @@ def run_ps(script: str, timeout: int = 90) -> tuple[str, str, int]:
         startupinfo = subprocess.STARTUPINFO()
         startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
         startupinfo.wShowWindow = 0
-    r = subprocess.run(
-        ["powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned", "-Command", script],
-        capture_output=True, text=True, timeout=timeout,
-        encoding="utf-8", errors="replace",
-        creationflags=creationflags,
-        startupinfo=startupinfo,
-    )
-    return r.stdout.strip(), r.stderr.strip(), r.returncode
+    script_path = ""
+    try:
+        # Passing generated scripts through -Command can exceed Windows' 32K
+        # process command-line limit for users with many group memberships.
+        # UTF-8 with BOM is used because Windows PowerShell 5.1 otherwise reads
+        # non-ASCII .ps1 files using the system code page.
+        with tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=".ps1",
+            delete=False,
+            encoding="utf-8-sig",
+            newline="\n",
+        ) as script_file:
+            script_file.write(script)
+            script_path = script_file.name
+
+        r = subprocess.run(
+            [
+                "powershell", "-NoProfile", "-ExecutionPolicy", "RemoteSigned",
+                "-File", script_path,
+            ],
+            capture_output=True, text=True, timeout=timeout,
+            encoding="utf-8", errors="replace",
+            creationflags=creationflags,
+            startupinfo=startupinfo,
+        )
+        return r.stdout.strip(), r.stderr.strip(), r.returncode
+    finally:
+        if script_path:
+            try:
+                os.remove(script_path)
+            except FileNotFoundError:
+                pass
 
 
 def sam_exists(sam: str) -> bool:

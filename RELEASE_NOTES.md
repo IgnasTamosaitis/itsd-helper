@@ -2,6 +2,17 @@
 
 ---
 
+## v1.5.1 - Large AD script execution fix
+
+Released 17 August 2026.
+
+- Large new-joiner, rejoiner, and mover PowerShell scripts now execute from a
+  temporary UTF-8 `.ps1` file instead of being placed directly on the Windows
+  command line, preventing `[WinError 206]` for users with many AD groups
+- Temporary scripts are removed after successful execution, failures, and timeouts
+
+---
+
 ## v1.5.0 - Safer account and group handling
 
 Released 17 August 2026.

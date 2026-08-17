@@ -4,7 +4,7 @@
 |---|---|
 | Audience | IT Service Desk team members handling employee onboarding |
 | Supported locations | Vilnius, Šiauliai, Poznań / Poland, and GBS |
-| Application version | 1.5.0 |
+| Application version | 1.5.1 |
 | Owner | IT Service Desk |
 | Last updated | 17 August 2026 |
 | Estimated setup time | 5–10 minutes |
