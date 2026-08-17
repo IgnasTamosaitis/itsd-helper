@@ -13,9 +13,25 @@ from ad_automation import (
 from group_policy import is_blocked_group
 
 
-def choose_enabled_account(accounts: list[dict], label: str) -> dict:
-    """Return the only enabled, non-disabled account or explain the ambiguity."""
+def choose_enabled_account(
+    accounts: list[dict], label: str, selected_username: str = ""
+) -> dict:
+    """Return an enabled account, honoring an explicit choice when supplied."""
     enabled = [a for a in accounts if a.get("enabled") and not a.get("disabled")]
+    selected = (selected_username or "").strip().casefold()
+    if selected:
+        match = next(
+            (
+                account for account in enabled
+                if (account.get("username") or "").strip().casefold() == selected
+            ),
+            None,
+        )
+        if match:
+            return match
+        raise ValueError(
+            f"The selected AD account {selected_username} is no longer enabled for {label}."
+        )
     if len(enabled) == 1:
         return enabled[0]
     if not enabled:
@@ -25,17 +41,35 @@ def choose_enabled_account(accounts: list[dict], label: str) -> dict:
 
 
 def plan_group_changes(current_groups: list[str], buddy_groups: list[str]) -> dict:
-    """Produce a case-insensitive exact diff against copyable buddy memberships."""
+    """Produce a case-insensitive diff without modifying protected memberships.
+
+    Restricted and redundant groups are outside this automation's authority. They
+    are never copied from the buddy, removed from the mover, or included in the
+    managed-state verification. This is important for groups such as
+    ``RDS-Disabled`` whose ACLs intentionally reject Service Desk changes.
+    """
     current = {g.casefold(): g for g in current_groups if g}
     buddy = {g.casefold(): g for g in buddy_groups if g}
     blocked = sorted((g for g in buddy.values() if is_blocked_group(g)), key=str.casefold)
+    preserved = sorted(
+        (g for g in current.values() if is_blocked_group(g)), key=str.casefold
+    )
+    managed_current = {k: g for k, g in current.items() if not is_blocked_group(g)}
     desired = {k: g for k, g in buddy.items() if not is_blocked_group(g)}
     return {
-        "add": sorted((desired[k] for k in desired.keys() - current.keys()), key=str.casefold),
-        "remove": sorted((current[k] for k in current.keys() - desired.keys()), key=str.casefold),
-        "keep": sorted((desired[k] for k in desired.keys() & current.keys()), key=str.casefold),
+        "add": sorted(
+            (desired[k] for k in desired.keys() - managed_current.keys()), key=str.casefold
+        ),
+        "remove": sorted(
+            (managed_current[k] for k in managed_current.keys() - desired.keys()),
+            key=str.casefold,
+        ),
+        "keep": sorted(
+            (desired[k] for k in desired.keys() & managed_current.keys()), key=str.casefold
+        ),
         "desired": sorted(desired.values(), key=str.casefold),
         "blocked_buddy": blocked,
+        "preserved_blocked": preserved,
     }
 
 
@@ -225,12 +259,25 @@ def build_mover_script(plan: dict) -> str:
         'Write-Host "Groups: $($currentGroups -join \' | \')"',
         "",
         "# Add desired memberships first, so the account never loses shared access mid-run.",
+        "$failedAddGroups = @()",
+        "$failedRemoveGroups = @()",
+        "$groupFailureMessages = @()",
     ]
     for group in groups["add"]:
-        lines.append(
-            f"Add-ADGroupMember -Identity '{_e(group)}' -Members '{sam}' -ErrorAction Stop"
-        )
-        lines.append(f"Write-Host 'OK  Added group: {_e(group)}'")
+        escaped_group = _e(group)
+        lines += [
+            "try {",
+            f"    $groupName = '{escaped_group}'",
+            "    $targetGroups = @(Get-ADGroup -Filter { Name -eq $groupName } -ErrorAction Stop)",
+            "    if ($targetGroups.Count -ne 1) { throw \"Expected one AD group named '$groupName'; found $($targetGroups.Count).\" }",
+            f"    Add-ADGroupMember -Identity $targetGroups[0].DistinguishedName -Members '{sam}' -ErrorAction Stop",
+            f"    Write-Host 'OK  Added group: {escaped_group}'",
+            "} catch {",
+            f"    $failedAddGroups += '{escaped_group}'",
+            f"    $groupFailureMessages += ('ADD | ' + '{escaped_group}' + ' | ' + $_.Exception.Message)",
+            f"    Write-Warning ('MANUAL GROUP FOLLOW-UP - could not add: ' + '{escaped_group}')",
+            "}",
+        ]
 
     lines += [
         "",
@@ -283,18 +330,33 @@ def build_mover_script(plan: dict) -> str:
         "# Remove only memberships that are outside the approved buddy-derived final state.",
     ]
     for group in groups["remove"]:
-        lines.append(
-            f"Remove-ADGroupMember -Identity '{_e(group)}' -Members '{sam}' -Confirm:$false -ErrorAction Stop"
-        )
-        lines.append(f"Write-Host 'OK  Removed group: {_e(group)}'")
+        escaped_group = _e(group)
+        lines += [
+            "try {",
+            f"    $groupName = '{escaped_group}'",
+            "    $targetGroups = @(Get-ADGroup -Filter { Name -eq $groupName } -ErrorAction Stop)",
+            "    if ($targetGroups.Count -ne 1) { throw \"Expected one AD group named '$groupName'; found $($targetGroups.Count).\" }",
+            f"    Remove-ADGroupMember -Identity $targetGroups[0].DistinguishedName -Members '{sam}' -Confirm:$false -ErrorAction Stop",
+            f"    Write-Host 'OK  Removed group: {escaped_group}'",
+            "} catch {",
+            f"    $failedRemoveGroups += '{escaped_group}'",
+            f"    $groupFailureMessages += ('REMOVE | ' + '{escaped_group}' + ' | ' + $_.Exception.Message)",
+            f"    Write-Warning ('MANUAL GROUP FOLLOW-UP - could not remove: ' + '{escaped_group}')",
+            "}",
+        ]
 
     desired = groups["desired"]
     lines += [
         "",
         f"$verify = Get-ADUser -Identity '{sam}' -Properties DistinguishedName,Title,Description,Department,Company,Office,StreetAddress,City,PostalCode,Country,Manager,MemberOf,extensionAttribute10,extensionAttribute15",
         "$verifyGroups = @($verify.MemberOf | ForEach-Object { (Get-ADGroup -Identity $_).Name } | Sort-Object)",
+        f"$ignoredGroups = @({_ps_array(groups['preserved_blocked'])} | Sort-Object)",
+        "$verifyManagedGroups = @($verifyGroups | Where-Object { $ignoredGroups -notcontains $_ } | Sort-Object)",
         f"$desiredGroups = @({_ps_array(desired)} | Sort-Object)",
-        "if (@(Compare-Object $verifyGroups $desiredGroups).Count -ne 0) { throw 'Final group verification failed.' }",
+        "$expectedManagedGroups = @($desiredGroups | Where-Object { $failedAddGroups -notcontains $_ })",
+        "$expectedManagedGroups += @($failedRemoveGroups)",
+        "$expectedManagedGroups = @($expectedManagedGroups | Sort-Object -Unique)",
+        "if (@(Compare-Object $verifyManagedGroups $expectedManagedGroups).Count -ne 0) { throw 'Final managed-group verification failed.' }",
         f"if (($verify.DistinguishedName -replace '^CN=[^,]+,','') -ne '{_e(plan['target_ou'])}') {{ throw 'OU verification failed.' }}",
         f"if ($verify.Title -ne '{_e(plan['title'])}' -or $verify.Description -ne '{_e(plan['title'])}') {{ throw 'Title/Description verification failed.' }}",
         f"if ($verify.Department -ne '{_e(plan['department'])}') {{ throw 'Department verification failed.' }}",
@@ -320,7 +382,14 @@ def build_mover_script(plan: dict) -> str:
             -5,
             f"if ([string]$verify.{prop} -ne '{expected}') {{ throw '{label} verification failed.' }}",
         )
-    lines.insert(-5, 'Write-Host "=== Verification passed ==="')
+    lines.insert(-5, 'Write-Host "=== Verification passed for applied changes ==="')
+    lines += [
+        "if ($groupFailureMessages.Count -gt 0) {",
+        "    Write-Warning 'The AD move continued, but manual group follow-up is required:'",
+        "    $groupFailureMessages | ForEach-Object { Write-Warning $_ }",
+        "    exit 2",
+        "}",
+    ]
     return "\n".join(lines)
 
 
@@ -348,7 +417,13 @@ def format_mover_plan(plan: dict) -> str:
     if groups["blocked_buddy"]:
         lines += [
             "",
-            "Not copied (approval-only/redundant): " + ", ".join(groups["blocked_buddy"]),
+            "Manual/approval-controlled groups not copied: "
+            + ", ".join(groups["blocked_buddy"]),
+        ]
+    if groups.get("preserved_blocked"):
+        lines += [
+            "Protected memberships left unchanged: "
+            + ", ".join(groups["preserved_blocked"]),
         ]
     if plan.get("manager_mismatch"):
         lines += ["", "WARNING: Buddy manager differs; the Jira Manager will be used."]

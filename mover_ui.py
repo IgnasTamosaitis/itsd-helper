@@ -428,6 +428,9 @@ class MoverADWindow(tk.Toplevel):
         self.plan: dict | None = None
         self.script = ""
         self._prepare_generation = 0
+        self._account_overrides: dict[str, str] = {}
+        self._account_choice_controls: dict[str, tuple[tk.StringVar, dict[str, str]]] = {}
+        self._account_choice_widgets: list[tuple[tk.Widget, str]] = []
         self.title(f"Prepare AD move - {ticket.get('name', '')}")
         self.geometry("980x720")
         self.minsize(840, 620)
@@ -497,6 +500,10 @@ class MoverADWindow(tk.Toplevel):
                      bg=SOFT_GOLD, fg=ORANGE, font=("Segoe UI", 8, "bold"),
                      padx=12, pady=8, wraplength=880, justify="left",
                      anchor="w").pack(fill="x", pady=(0, 10))
+        self._account_picker = tk.Frame(
+            content, bg=SOFT_GOLD, padx=12, pady=10,
+            highlightbackground="#F0C36D", highlightthickness=1,
+        )
         self._ack_var = tk.BooleanVar(value=False)
         self._ack = tk.Checkbutton(
             content, text="I reviewed the manager mismatch; use the Jira Manager",
@@ -552,6 +559,11 @@ class MoverADWindow(tk.Toplevel):
             self._progress.stop()
             self._activity.configure(text=message)
             self._refresh_btn.configure(state="normal")
+        for widget, enabled_state in self._account_choice_widgets:
+            try:
+                widget.configure(state="disabled" if busy else enabled_state)
+            except tk.TclError:
+                pass
 
     def _prepare(self):
         self._prepare_generation += 1
@@ -564,6 +576,7 @@ class MoverADWindow(tk.Toplevel):
         self._set_text(self._plan_box, "Preparing a fresh Active Directory comparison…")
         self._set_text(self._script_box, "PowerShell will appear after all preflight checks pass.")
         acknowledge_manager_mismatch = self._ack_var.get()
+        account_overrides = dict(self._account_overrides)
 
         def _work():
             try:
@@ -573,15 +586,47 @@ class MoverADWindow(tk.Toplevel):
                 manager_name = self.ticket.get("manager", "")
                 if not buddy_name:
                     raise ValueError("No AD buddy is available from Jira.")
-                mover_account = choose_enabled_account(
-                    find_user_accounts_by_name(employee_name), f"employee {employee_name}"
+                lookups = (
+                    ("employee", "Employee", employee_name),
+                    ("buddy", "Buddy", buddy_name),
+                    ("manager", "Manager", manager_name),
                 )
-                buddy_account = choose_enabled_account(
-                    find_user_accounts_by_name(buddy_name), f"buddy {buddy_name}"
-                )
-                manager_account = choose_enabled_account(
-                    find_user_accounts_by_name(manager_name), f"manager {manager_name}"
-                )
+                resolved: dict[str, dict] = {}
+                ambiguous: dict[str, dict] = {}
+                for role, role_label, name in lookups:
+                    accounts = find_user_accounts_by_name(name)
+                    enabled = [
+                        account for account in accounts
+                        if account.get("enabled") and not account.get("disabled")
+                    ]
+                    selected_username = account_overrides.get(role, "")
+                    selected_exists = any(
+                        (account.get("username") or "").casefold()
+                        == selected_username.casefold()
+                        for account in enabled
+                    )
+                    if len(enabled) > 1 and not selected_exists:
+                        ambiguous[role] = {
+                            "label": f"{role_label}: {name}",
+                            "accounts": enabled,
+                        }
+                        continue
+                    resolved[role] = choose_enabled_account(
+                        accounts,
+                        f"{role} {name}",
+                        selected_username if selected_exists else "",
+                    )
+                if ambiguous:
+                    self.after(
+                        0,
+                        lambda ambiguous=ambiguous: self._select_accounts(
+                            generation, ambiguous
+                        ),
+                    )
+                    return
+                mover_account = resolved["employee"]
+                buddy_account = resolved["buddy"]
+                manager_account = resolved["manager"]
                 mover = get_mover_account_info(mover_account["username"])
                 buddy = get_mover_account_info(buddy_account["username"])
                 manager = get_mover_account_info(manager_account["username"])
@@ -598,6 +643,104 @@ class MoverADWindow(tk.Toplevel):
                     lambda message=message: self._prepare_failed(generation, message),
                 )
         threading.Thread(target=_work, daemon=True).start()
+
+    @staticmethod
+    def _account_choice_label(account: dict) -> str:
+        username = account.get("username", "")
+        title = account.get("title") or "No title"
+        ou = account.get("ou") or "OU not available"
+        normalized_ou = ou.casefold()
+        if "ou=3cx" in normalized_ou:
+            account_type = "3CX / SYSTEM ACCOUNT"
+        elif "ou=girteka_system_users" in normalized_ou:
+            account_type = "SYSTEM ACCOUNT"
+        else:
+            account_type = "USER ACCOUNT"
+        return f"{username}  •  {account_type}  •  {title}  •  {ou}"
+
+    def _select_accounts(self, generation: int, ambiguous: dict[str, dict]):
+        if generation != self._prepare_generation:
+            return
+        for widget in self._account_picker.winfo_children():
+            widget.destroy()
+        self._account_choice_controls = {}
+        self._account_choice_widgets = []
+        tk.Label(
+            self._account_picker,
+            text="Choose the Active Directory account to use",
+            bg=SOFT_GOLD, fg=TEXT, font=("Segoe UI", 9, "bold"),
+        ).pack(anchor="w")
+        tk.Label(
+            self._account_picker,
+            text="Multiple enabled accounts were found. Review the username, title, and OU before continuing.",
+            bg=SOFT_GOLD, fg=GRAY, font=("Segoe UI", 8),
+        ).pack(anchor="w", pady=(2, 7))
+        for role, details in ambiguous.items():
+            row = tk.Frame(self._account_picker, bg=SOFT_GOLD)
+            row.pack(fill="x", pady=2)
+            tk.Label(
+                row, text=details["label"], bg=SOFT_GOLD, fg=TEXT,
+                font=("Segoe UI", 8, "bold"), width=24, anchor="w",
+            ).pack(side="left")
+            accounts = sorted(
+                details["accounts"],
+                key=lambda account: (account.get("username") or "").casefold(),
+            )
+            labels = [self._account_choice_label(account) for account in accounts]
+            label_to_username = {
+                label: account.get("username", "")
+                for label, account in zip(labels, accounts)
+            }
+            value = tk.StringVar(value="")
+            combo = ttk.Combobox(
+                row, textvariable=value, values=labels, state="readonly", width=82,
+            )
+            combo.pack(side="left", fill="x", expand=True)
+            combo.bind("<<ComboboxSelected>>", self._account_choice_changed)
+            self._account_choice_controls[role] = (value, label_to_username)
+            self._account_choice_widgets.append((combo, "readonly"))
+        rebuild_button = tk.Button(
+            self._account_picker,
+            text="Rebuild preview with selected account(s)",
+            command=self._apply_account_choices,
+            bg=ACCENT, fg=WHITE, relief="flat", bd=0,
+            font=("Segoe UI", 8, "bold"), padx=12, pady=6,
+            cursor="hand2",
+        )
+        rebuild_button.pack(anchor="e", pady=(8, 0))
+        self._account_choice_widgets.append((rebuild_button, "normal"))
+        self._account_picker.pack(fill="x", before=self._review_tabs, pady=(0, 8))
+        self._ack.pack_forget()
+        self._set_text(
+            self._plan_box,
+            "PREPARATION PAUSED\n\nSelect the correct enabled AD account above, then rebuild the preview.",
+        )
+        self._status.configure(text="SELECT ACCOUNT", fg="#FFF0B3")
+        self._set_busy(False, "Waiting for account selection")
+
+    def _account_choice_changed(self, _event=None):
+        self._prepare_generation += 1
+        self.plan = None
+        self.script = ""
+        self._apply_btn.configure(state="disabled")
+        self._status.configure(text="SELECTION CHANGED", fg="#FFF0B3")
+        self._activity.configure(text="Rebuild the preview to use this account")
+
+    def _apply_account_choices(self):
+        selected: dict[str, str] = {}
+        for role, (value, label_to_username) in self._account_choice_controls.items():
+            label = value.get()
+            username = label_to_username.get(label, "")
+            if not username:
+                messagebox.showwarning(
+                    "Select an account",
+                    "Choose an account for every ambiguous AD lookup before continuing.",
+                    parent=self,
+                )
+                return
+            selected[role] = username
+        self._account_overrides.update(selected)
+        self._prepare()
 
     def _prepared(self, generation: int, plan: dict, script: str):
         if generation != self._prepare_generation:

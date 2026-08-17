@@ -2,6 +2,25 @@
 
 ---
 
+## v1.5.0 - Safer account and group handling
+
+Released 17 August 2026.
+
+- Mover preflight now provides an explicit account selector when the employee,
+  Buddy, or manager resolves to multiple enabled AD accounts
+- Audit-confirmed permission-controlled memberships (`Disable_USB`,
+  `VPN_IT_integracijos`, and `GrayList_WillGrow Users`) are now manual, and
+  unexpected group permission failures no longer prevent the remaining mover
+  changes from running; unresolved groups are reported and keep the run incomplete
+- Joiner, rejoiner, and mover group operations now resolve exact group names to
+  Distinguished Names, supporting names that contain characters such as `/` and `=`
+- Protected and redundant groups are left unchanged during mover reconciliation,
+  preventing ACL-protected groups such as `RDS-Disabled` from aborting the run
+- The confirmed GBS mapping now retains the full Tbilisi campus address, postal
+  code `0162`, and `extensionAttribute15` value `SF`
+
+---
+
 ## v1.4.0 - Employee movers
 
 - Added a dedicated Movers tab for Jira `Employee moving` tickets

@@ -4,9 +4,9 @@
 |---|---|
 | Audience | IT Service Desk team members handling employee onboarding |
 | Supported locations | Vilnius, Šiauliai, Poznań / Poland, and GBS |
-| Application version | 1.4.0 |
+| Application version | 1.5.0 |
 | Owner | IT Service Desk |
-| Last updated | 31 July 2026 |
+| Last updated | 17 August 2026 |
 | Estimated setup time | 5–10 minutes |
 
 ## Purpose
@@ -28,17 +28,31 @@ Use the **Movers** tab for assigned Jira issues of type **Employee moving**.
 Review the effective date, new job title, company, manager, Buddy, and Axapta
 rights before selecting **Prepare AD move**.
 
+If an employee, Buddy, or manager search finds multiple enabled AD accounts,
+select the intended username in the mover window. The selector includes each
+account's title and OU so service accounts such as 3CX accounts can be excluded.
+The app rebuilds the complete preview after the selection.
+
 The mover workflow changes only Active Directory. It aligns copyable direct
 groups and the OU with the Buddy, uses the Buddy's Department, applies the Jira
 new title to both Title and Description, and applies the Jira Company and
 Manager. Address fields come from the same validated company/location mappings
 used for onboarding. Email, password, UPN, and proxy addresses are preserved.
+Jira ticket status changes remain manual.
 
 If Buddy and Axapta rights differ, Buddy remains the AD template and the app
 shows the separate Axapta user as a follow-up. If Buddy is empty, Axapta rights
-is used as the AD buddy. The app blocks an ambiguous or disabled account,
-unknown address, unacknowledged manager mismatch, invalid OU, or stale preview.
-Completion is saved only after final AD verification passes.
+is used as the AD buddy. Multiple enabled accounts require explicit selection.
+The app blocks a disabled account, unknown address, unacknowledged manager
+mismatch, invalid OU, or stale preview. Completion is saved only after final AD
+verification passes.
+
+Permission-controlled memberships found in the audit history—including
+`Disable_USB`, `VPN_IT_integracijos`, and `GrayList_WillGrow Users`—are excluded
+from automatic copying and remain a manual follow-up. If AD denies another group
+addition or removal, the mover workflow continues applying the remaining safe
+changes, reports every failed membership in the execution output, and does not
+record the move as complete.
 
 ## Before you start
 

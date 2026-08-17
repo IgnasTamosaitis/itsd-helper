@@ -16,6 +16,8 @@ import subprocess
 import unicodedata
 from html import unescape
 
+from group_policy import is_blocked_group
+
 SF_OU_FRAGMENT = "Active_Users_from_SF"   # substring present in the SF provisioning OU
 
 # ── Helpers ───────────────────────────────────────────────────────────────────
@@ -288,12 +290,12 @@ _SIAULIAI_ADDRESS = {
 }
 
 _GBS_ADDRESS = {
-    "street":  "Ilia Chavchavadze Ave. 37L",
+    "street":  "Georgia, Tbilisi, Vake District, Ilia Chavchavadze Avenue, No. 37L, Commercial Space No. 5, Floor 3-4, Block A",
     "city":    "Tbilisi",
-    "zip":     "",
+    "zip":     "0162",
     "country": "GE",
     "office":  "Tbilisi",
-    "ext15":   "",
+    "ext15":   "SF",
 }
 
 _POZNAN_ADDRESS = {
@@ -713,6 +715,28 @@ def build_ext_attr_lines(sam: str, ext_attrs: dict) -> list[str]:
     ]
 
 
+def _group_add_lines(sam: str, groups: list[str]) -> list[str]:
+    """Build safe group additions, excluding policy-controlled memberships."""
+    sam_e = _e(sam)
+    lines: list[str] = []
+    for group in groups:
+        if is_blocked_group(group):
+            continue
+        group_e = _e(group)
+        lines += [
+            "try {",
+            f"    $groupName = '{group_e}'",
+            "    $targetGroups = @(Get-ADGroup -Filter { Name -eq $groupName } -ErrorAction Stop)",
+            "    if ($targetGroups.Count -ne 1) { throw \"Expected one AD group named '$groupName'; found $($targetGroups.Count).\" }",
+            f"    Add-ADGroupMember -Identity $targetGroups[0].DistinguishedName -Members '{sam_e}' -ErrorAction Stop",
+            f"    Write-Host 'OK  Added group: {group_e}'",
+            "} catch {",
+            f"    Write-Warning ('Group ' + '{group_e}' + ': ' + $_.Exception.Message)",
+            "}",
+        ]
+    return lines
+
+
 def _password_reset_lines(sam: str, password: str) -> list[str]:
     sam_e = _e(sam)
     pwd_e = _e(password)
@@ -788,11 +812,7 @@ def build_new_joiner_script(ticket: dict, sf_account: dict, target_ou: str,
         "",
         "# Add to AD groups (failures logged but non-fatal)",
     ]
-    for g in groups:
-        L.append(
-            f"try {{ Add-ADGroupMember -Identity '{_e(g)}' -Members '{username}' }} "
-            f"catch {{ Write-Warning \"Group '{_e(g)}': $_\" }}"
-        )
+    L += _group_add_lines(sf_account["username"], groups)
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _password_reset_lines(sf_account["username"], password)
@@ -900,11 +920,7 @@ def build_rejoiner_dual_script(ticket: dict, sf_account: dict, old_account: dict
         "",
         "# Add to AD groups",
     ]
-    for g in groups:
-        L.append(
-            f"try {{ Add-ADGroupMember -Identity '{_e(g)}' -Members '{old_sam}' }} "
-            f"catch {{ Write-Warning \"Group '{_e(g)}': $_\" }}"
-        )
+    L += _group_add_lines(old_account["username"], groups)
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _password_reset_lines(old_account["username"], password)
@@ -1044,11 +1060,7 @@ def build_rejoiner_single_script(ticket: dict, account: dict, target_ou: str,
         "",
         "# Add to AD groups",
     ]
-    for g in groups:
-        L.append(
-            f"try {{ Add-ADGroupMember -Identity '{_e(g)}' -Members '{sam}' }} "
-            f"catch {{ Write-Warning \"Group '{_e(g)}': $_\" }}"
-        )
+    L += _group_add_lines(account["username"], groups)
     L += ['Write-Host "OK  Groups assigned"', ""]
 
     L += _password_reset_lines(account["username"], password)

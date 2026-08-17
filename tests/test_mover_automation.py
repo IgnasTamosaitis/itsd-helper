@@ -1,5 +1,6 @@
 import unittest
 
+from group_policy import is_blocked_group
 from mover_automation import (
     build_mover_plan,
     build_mover_script,
@@ -9,17 +10,33 @@ from mover_automation import (
 
 
 class MoverGroupPlanTests(unittest.TestCase):
+    def test_audit_confirmed_permission_groups_are_blocked(self):
+        for group in (
+            "RDS-Disabled",
+            "Teams VLS access policy applied",
+            "Disable_USB",
+            "VPN_IT_integracijos",
+            "GrayList_WillGrow Users",
+        ):
+            with self.subTest(group=group):
+                self.assertTrue(is_blocked_group(group))
+
     def test_exact_group_diff_preserves_shared_and_blocks_restricted(self):
         plan = plan_group_changes(
             ["Shared", "Old Access", "Power BI Pro license"],
-            ["shared", "New Access", "Power BI Pro license", "RDS-Disabled"],
+            [
+                "shared", "New Access", "Power BI Pro license",
+                "RDS-Disabled", "Disable_USB",
+            ],
         )
         self.assertEqual(plan["add"], ["New Access"])
         self.assertEqual(plan["keep"], ["shared"])
-        self.assertEqual(plan["remove"], ["Old Access", "Power BI Pro license"])
+        self.assertEqual(plan["remove"], ["Old Access"])
         self.assertEqual(plan["desired"], ["New Access", "shared"])
+        self.assertEqual(plan["preserved_blocked"], ["Power BI Pro license"])
         self.assertEqual(
-            plan["blocked_buddy"], ["Power BI Pro license", "RDS-Disabled"]
+            plan["blocked_buddy"],
+            ["Disable_USB", "Power BI Pro license", "RDS-Disabled"],
         )
 
     def test_enabled_account_must_be_unambiguous(self):
@@ -34,6 +51,17 @@ class MoverGroupPlanTests(unittest.TestCase):
                 {"username": "ONE", "enabled": True, "disabled": False},
                 {"username": "TWO", "enabled": True, "disabled": False},
             ], "employee")
+
+    def test_explicit_enabled_account_choice_resolves_ambiguity(self):
+        accounts = [
+            {"username": "MGORO", "enabled": True, "disabled": False},
+            {"username": "maksim.gorochovskij_", "enabled": True, "disabled": False},
+        ]
+        selected = choose_enabled_account(accounts, "buddy", "mgoro")
+        self.assertEqual(selected["username"], "MGORO")
+
+        with self.assertRaisesRegex(ValueError, "no longer enabled"):
+            choose_enabled_account(accounts, "buddy", "missing")
 
 
 class MoverScriptTests(unittest.TestCase):
@@ -84,12 +112,27 @@ class MoverScriptTests(unittest.TestCase):
         self.assertIn("Company = 'Girteka Logistics UAB'", script)
         self.assertIn("Manager = $manager.DistinguishedName", script)
         self.assertIn("TargetPath 'OU=New,DC=example,DC=com'", script)
-        self.assertIn("Add-ADGroupMember -Identity 'New Group'", script)
-        self.assertIn("Remove-ADGroupMember -Identity 'Old Group'", script)
-        self.assertIn("Final group verification failed", script)
+        self.assertIn("$groupName = 'New Group'", script)
+        self.assertIn("$groupName = 'Old Group'", script)
+        self.assertIn("Add-ADGroupMember -Identity $targetGroups[0].DistinguishedName", script)
+        self.assertIn("Remove-ADGroupMember -Identity $targetGroups[0].DistinguishedName", script)
+        self.assertIn("Final managed-group verification failed", script)
+        self.assertIn("$ignoredGroups", script)
+        self.assertIn("$failedAddGroups", script)
+        self.assertIn("$failedRemoveGroups", script)
+        self.assertIn("MANUAL GROUP FOLLOW-UP", script)
+        self.assertIn("exit 2", script)
         self.assertNotIn("Set-ADAccountPassword", script)
         self.assertNotIn("proxyAddresses", script)
         self.assertNotIn("Power BI Pro license' -Members", script)
+
+    def test_disable_usb_is_manual_and_never_added(self):
+        self.buddy["groups"].append("Disable_USB")
+        plan = build_mover_plan(self.ticket, self.mover, self.buddy, self.manager)
+        script = build_mover_script(plan)
+
+        self.assertIn("Disable_USB", plan["groups"]["blocked_buddy"])
+        self.assertNotIn("$groupName = 'Disable_USB'", script)
 
     def test_manager_mismatch_requires_acknowledgement(self):
         self.buddy["manager_sam"] = "OTHER"

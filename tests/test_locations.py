@@ -90,6 +90,23 @@ class LocationDetectionTests(unittest.TestCase):
 
 
 class AddressMappingTests(unittest.TestCase):
+    def test_gbs_uses_confirmed_full_tbilisi_address(self):
+        expected = {
+            "street": (
+                "Georgia, Tbilisi, Vake District, Ilia Chavchavadze Avenue, "
+                "No. 37L, Commercial Space No. 5, Floor 3-4, Block A"
+            ),
+            "city": "Tbilisi",
+            "zip": "0162",
+            "country": "GE",
+            "office": "Tbilisi",
+            "ext15": "SF",
+        }
+        self.assertEqual(
+            detect_company_address("Girteka Business Services LLC", "GBS"),
+            expected,
+        )
+
     def test_siauliai_uses_confirmed_campus_address(self):
         expected = {
             "street": "Pročiūnų g. 16",
@@ -144,6 +161,47 @@ class GeneratedScriptTests(unittest.TestCase):
     }
     OLD_ACCOUNT = {"username": "TESTOLD"}
     OU = "OU=Test,DC=girteka,DC=lt"
+
+    def test_permission_groups_are_filtered_in_all_onboarding_scenarios(self):
+        ticket = {
+            "office": "Vilnius",
+            "company_name": "Girteka Logistics UAB",
+            "manager": "Test Manager",
+            "position": "Tester",
+        }
+        groups = [
+            "Normal Group",
+            "EU Transportas/O=girteka",
+            "Disable_USB",
+            "VPN_IT_integracijos",
+            "GrayList_WillGrow Users",
+        ]
+        scripts = [
+            build_new_joiner_script(
+                ticket, self.SF_ACCOUNT, self.OU,
+                "Test.User@girteka.eu", "Welcome123", groups,
+            ),
+            build_rejoiner_dual_script(
+                ticket, self.SF_ACCOUNT, self.OLD_ACCOUNT, self.OU,
+                "Test.User@girteka.eu", "Welcome123", groups,
+            ),
+            build_rejoiner_single_script(
+                ticket, self.OLD_ACCOUNT, self.OU,
+                "Test.User@girteka.eu", "Welcome123", groups,
+            ),
+        ]
+        for script in scripts:
+            with self.subTest(script=script[:40]):
+                self.assertIn("$groupName = 'Normal Group'", script)
+                self.assertIn("$groupName = 'EU Transportas/O=girteka'", script)
+                self.assertIn("Get-ADGroup -Filter", script)
+                self.assertIn(
+                    "Add-ADGroupMember -Identity $targetGroups[0].DistinguishedName",
+                    script,
+                )
+                self.assertNotIn("Disable_USB", script)
+                self.assertNotIn("VPN_IT_integracijos", script)
+                self.assertNotIn("GrayList_WillGrow Users", script)
 
     def test_siauliai_fields_are_applied_in_all_scenarios(self):
         ticket = {

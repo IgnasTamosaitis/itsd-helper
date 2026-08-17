@@ -4,9 +4,9 @@ A Windows desktop tool for ITSD that connects to Jira and centralises everything
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
-> **Current release: v1.4.0**<br>
-> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi)
-> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0)
+> **Current release: v1.5.0**<br>
+> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.5.0/Jira-Reminders-1.5.0.msi)
+> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.5.0)
 > · [Open the team setup KB](docs/Jira-Reminders-KB.md)
 
 ---
@@ -32,6 +32,8 @@ and any separate Axapta-rights template.
 The dedicated **Prepare AD move** workflow:
 
 - resolves the mover, buddy, and Jira manager as separate enabled AD accounts;
+- pauses for an explicit username selection when any lookup finds multiple
+  enabled accounts, showing each account's title and OU for comparison;
 - uses Buddy as the AD template, falling back to Axapta rights only when Buddy
   is empty;
 - shows an Axapta follow-up warning when Buddy and Axapta rights differ;
@@ -44,9 +46,17 @@ The dedicated **Prepare AD move** workflow:
   address before recording the move as complete.
 
 Approval-only and redundant buddy groups remain blocked. A manager mismatch,
-ambiguous or disabled account, unknown address, or AD change after preview
-blocks execution until it is reviewed. The workflow does not reset passwords,
-change email addresses, or perform Axapta work.
+disabled account, unknown address, or AD change after preview blocks execution
+until it is reviewed. Ambiguous enabled accounts require an explicit selection.
+The workflow does not reset passwords, change email addresses, or perform
+Axapta work.
+Jira ticket status changes remain manual.
+
+Permission-controlled memberships found in the audit history—including
+`Disable_USB`, `VPN_IT_integracijos`, and `GrayList_WillGrow Users`—are displayed
+as manual follow-up and are not copied automatically. If another group operation
+is denied, the workflow continues with the remaining changes, verifies what was
+applied, and reports the unresolved group without marking the AD move complete.
 
 ### Detail panel
 Clicking a person opens their full detail view on the right side, showing:
@@ -134,7 +144,7 @@ legal suffix formatting, and Lithuanian/Polish diacritics.
 |---|---|
 | **Girteka Park / Vilnius** | Laisvės pr. 36, Vilnius, LT; Office `Vilnius`; extensionAttribute15 `SF` |
 | **Siauliai Campus / Šiauliai** | Pročiūnų g. 16, LT-77103 Šiauliai; Office `Siauliai Campus`; extensionAttribute15 `SF` |
-| **Tbilisi / GBS** | Ilia Chavchavadze Ave. 37L, Tbilisi, GE; Office `Tbilisi` |
+| **Tbilisi / GBS** | Full Chavchavadze Avenue 37L campus address, 0162 Tbilisi, GE; Office `Tbilisi`; extensionAttribute15 `SF` |
 | **Poznańska 4, Sady / Girpoltrans** | Poznańska 4, Sady, PL; Office `Poznan` |
 | **Other recognised Polish companies** | Applies Poland defaults and the Jira office, but preserves authoritative SuccessFactors street/city/postal data until that company's campus address is confirmed |
 
@@ -212,7 +222,7 @@ run any scripts.
 
 ## Installation
 
-1. Download [**`Jira-Reminders-1.4.0.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi)
+1. Download [**`Jira-Reminders-1.5.0.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.5.0/Jira-Reminders-1.5.0.msi)
 2. Double-click the MSI and complete the short Windows Installer flow
 3. Jira Reminders opens automatically at the first-time setup screen
 
