@@ -4,9 +4,9 @@ A Windows desktop tool for ITSD that connects to Jira and centralises everything
 
 The app runs silently in the system tray and sends you Windows notifications so nothing gets missed.
 
-> **Current release: v1.5.1**<br>
-> [Download the Windows installer](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.5.1/Jira-Reminders-1.5.1.msi)
-> · [View the release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.5.1)
+> **Current release: v1.5.2**<br>
+> [Download the Windows installer](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/download/v1.5.2/Jira-Reminders-1.5.2.msi)
+> · [View the release](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/tag/v1.5.2)
 > · [Open the team setup KB](docs/Jira-Reminders-KB.md)
 
 ---
@@ -222,7 +222,7 @@ run any scripts.
 
 ## Installation
 
-1. Download [**`Jira-Reminders-1.5.1.msi`**](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.5.1/Jira-Reminders-1.5.1.msi)
+1. Download [**`Jira-Reminders-1.5.2.msi`**](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/download/v1.5.2/Jira-Reminders-1.5.2.msi)
 2. Double-click the MSI and complete the short Windows Installer flow
 3. Jira Reminders opens automatically at the first-time setup screen
 

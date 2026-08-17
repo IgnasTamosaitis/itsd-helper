@@ -272,7 +272,11 @@ class App:
             time.sleep(60 * 60)  # keep long-running tray sessions update-aware
 
     def _do_update_check(self) -> None:
-        release = updater.check_for_update()
+        try:
+            release = updater.check_for_update()
+        except updater.UpdateCheckError as e:
+            print(f"[updater] automatic check failed: {e}")
+            return
         if release and (
             not self._pending_update
             or self._pending_update.get("version") != release.get("version")
@@ -426,7 +430,17 @@ class App:
 
     def _tray_check_updates(self, icon=None, item=None):
         def _check():
-            release = updater.check_for_update()
+            try:
+                release = updater.check_for_update()
+            except updater.UpdateCheckError as e:
+                import tkinter.messagebox as mb
+                error_message = str(e)
+                self._root.after(0, lambda: mb.showwarning(
+                    "Update check failed",
+                    f"Could not determine the latest version.\n\n{error_message}",
+                    parent=self._root,
+                ))
+                return
             if release:
                 self._ui_queue.put(("update_available", release))
             else:

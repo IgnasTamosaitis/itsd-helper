@@ -4,7 +4,7 @@
 |---|---|
 | Audience | IT Service Desk team members handling employee onboarding |
 | Supported locations | Vilnius, Šiauliai, Poznań / Poland, and GBS |
-| Application version | 1.5.1 |
+| Application version | 1.5.2 |
 | Owner | IT Service Desk |
 | Last updated | 17 August 2026 |
 | Estimated setup time | 5–10 minutes |
@@ -70,9 +70,9 @@ You do **not** need to install Python, download repository source files, run
 ## 1. Download and install Jira Reminders
 
 1. Open the official
-   [Jira Reminders v1.4.0 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0).
+   [Jira Reminders v1.5.2 release](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/tag/v1.5.2).
 2. Download
-   [Jira-Reminders-1.4.0.msi](https://github.com/IgnasTamosaitis/itsd-helper/releases/download/v1.4.0/Jira-Reminders-1.4.0.msi).
+   [Jira-Reminders-1.5.2.msi](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/download/v1.5.2/Jira-Reminders-1.5.2.msi).
 3. Open the downloaded MSI.
 4. Complete the Windows Installer process.
 5. Wait for **Welcome to Jira Reminders** to open automatically.
@@ -83,7 +83,7 @@ The installer creates:
 - a **Jira Reminders** Start menu shortcut; and
 - a Windows Startup shortcut so the app launches whenever you sign in.
 
-> **Unknown publisher:** Version 1.4.0 is not Authenticode-signed, so Windows
+> **Unknown publisher:** Version 1.5.2 is not Authenticode-signed, so Windows
 > may show an **Unknown publisher** message. Only continue when the MSI was
 > downloaded from the official GitHub release above. If company policy blocks
 > it, contact the application owner instead of bypassing the policy.
@@ -266,5 +266,5 @@ Never provide your Jira or Snipe-IT API token.
 
 ## References
 
-- [Jira Reminders v1.4.0 release](https://github.com/IgnasTamosaitis/itsd-helper/releases/tag/v1.4.0)
+- [Jira Reminders v1.5.2 release](https://github.com/IgnasTamosaitis/Jira-onboarding-helper/releases/tag/v1.5.2)
 - [Atlassian — Manage API tokens for your account](https://support.atlassian.com/atlassian-account/docs/manage-api-tokens-for-your-atlassian-account/)

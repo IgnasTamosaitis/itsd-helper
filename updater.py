@@ -9,11 +9,16 @@ import sys
 import tempfile
 import zipfile
 from pathlib import Path
+from urllib.parse import unquote
 
 import requests
 
-GITHUB_REPO    = "IgnasTamosaitis/itsd-helper"
-_RELEASES_API  = f"https://api.github.com/repos/{GITHUB_REPO}/releases/latest"
+GITHUB_REPO        = "IgnasTamosaitis/Jira-onboarding-helper"
+_LATEST_RELEASE_URL = f"https://github.com/{GITHUB_REPO}/releases/latest"
+_REQUEST_HEADERS    = {
+    "Cache-Control": "no-cache",
+    "User-Agent": "Jira-Reminders-Updater",
+}
 
 IS_FROZEN    = bool(getattr(sys, "frozen", False))
 APP_DIR      = (
@@ -40,42 +45,64 @@ def _parse_ver(v: str) -> tuple[int, ...]:
     return tuple(int(x) for x in v.lstrip("v").split(".") if x.isdigit())
 
 
+class UpdateCheckError(RuntimeError):
+    """Raised when the latest release cannot be determined reliably."""
+
+
+def _latest_release_tag() -> str:
+    """Resolve GitHub's public latest-release redirect without using its API."""
+    try:
+        response = requests.get(
+            _LATEST_RELEASE_URL,
+            timeout=10,
+            allow_redirects=False,
+            headers=_REQUEST_HEADERS,
+        )
+        response.raise_for_status()
+    except requests.RequestException as exc:
+        raise UpdateCheckError(
+            "GitHub could not be reached. Check your network connection and try again."
+        ) from exc
+
+    location = response.headers.get("Location", "")
+    match = re.search(r"/releases/tag/([^/?#]+)", location)
+    if not match:
+        raise UpdateCheckError(
+            "GitHub returned an unexpected latest-release response. Try again later."
+        )
+    return unquote(match.group(1))
+
+
 def check_for_update() -> dict | None:
     """Return release info dict if a newer version exists on GitHub, else None."""
     try:
-        r = requests.get(
-            _RELEASES_API, timeout=10,
-            headers={"Accept": "application/vnd.github+json"},
-        )
-        r.raise_for_status()
-        release = r.json()
-        tag = release.get("tag_name", "")
+        tag = _latest_release_tag()
         if _parse_ver(tag) > _parse_ver(current_version()):
+            version = tag.lstrip("v")
             result = {
                 "version": tag,
-                "notes": release.get("body", "").strip(),
+                "notes": "",
             }
             if IS_FROZEN:
-                installer = next(
-                    (
-                        asset
-                        for asset in release.get("assets", [])
-                        if asset.get("name", "").casefold().endswith(".msi")
-                    ),
-                    None,
-                )
-                if not installer:
-                    print(f"[updater] release {tag} has no MSI asset")
-                    return None
+                installer_name = f"Jira-Reminders-{version}.msi"
                 result.update({
-                    "installer_url": installer["browser_download_url"],
-                    "installer_name": installer["name"],
+                    "installer_url": (
+                        f"https://github.com/{GITHUB_REPO}/releases/download/"
+                        f"{tag}/{installer_name}"
+                    ),
+                    "installer_name": installer_name,
                 })
             else:
-                result["zipball_url"] = release["zipball_url"]
+                result["zipball_url"] = (
+                    f"https://github.com/{GITHUB_REPO}/archive/refs/tags/{tag}.zip"
+                )
             return result
-    except Exception as e:
-        print(f"[updater] check failed: {e}")
+    except UpdateCheckError:
+        raise
+    except (TypeError, ValueError) as exc:
+        raise UpdateCheckError(
+            "GitHub returned an invalid release version. Try again later."
+        ) from exc
     return None
 
 

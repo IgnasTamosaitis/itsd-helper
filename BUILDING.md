@@ -50,11 +50,14 @@ Pushing a tag such as `v1.3.0` runs
 
 1. builds the MSI on a clean Windows runner;
 2. publishes it as a workflow artifact; and
-3. attaches it to the GitHub release matching the tag.
+3. creates the GitHub release with the MSI already attached.
 
-Create the GitHub release for the tag before the workflow reaches the upload
-step. Installed copies then discover the release through the existing update
-check and download the attached MSI.
+Do not publish a release before pushing the tag. The workflow deliberately waits
+until the MSI is ready so installed copies cannot discover an incomplete release.
+If you want to prepare a custom title and notes beforehand, create a **draft**
+release for the tag; the workflow attaches the MSI and publishes that draft only
+after the build succeeds. If no draft exists, it creates the release with
+automatically generated notes.
 
 ## Installer behavior
 

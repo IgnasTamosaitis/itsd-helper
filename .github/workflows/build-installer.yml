@@ -45,9 +45,27 @@ jobs:
           path: dist/installer/*.msi
           if-no-files-found: error
 
-      - name: Attach installer to GitHub release
+      - name: Publish release with installer
         if: github.ref_type == 'tag'
         env:
           GH_TOKEN: ${{ github.token }}
         shell: pwsh
-        run: gh release upload "${{ github.ref_name }}" dist/installer/*.msi --clobber
+        run: |
+          $tag = "${{ github.ref_name }}"
+          $releaseJson = gh release view $tag --json isDraft 2>$null
+          if ($LASTEXITCODE -eq 0) {
+            gh release upload $tag dist/installer/*.msi --clobber
+            if ($LASTEXITCODE -ne 0) { throw "Uploading the MSI failed." }
+
+            $release = $releaseJson | ConvertFrom-Json
+            if ($release.isDraft) {
+              gh release edit $tag --draft=false
+              if ($LASTEXITCODE -ne 0) { throw "Publishing the draft release failed." }
+            }
+          } else {
+            gh release create $tag dist/installer/*.msi `
+              --verify-tag `
+              --generate-notes `
+              --title $tag
+            if ($LASTEXITCODE -ne 0) { throw "Creating the release failed." }
+          }

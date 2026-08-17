@@ -2,6 +2,21 @@
 
 ---
 
+## v1.5.2 - Reliable automatic updates
+
+Released 17 August 2026.
+
+- Update checks now use GitHub's public latest-release redirect instead of the
+  rate-limited API, avoiding false results for colleagues sharing a corporate
+  public IP address
+- Failed update checks now display a clear error instead of claiming that the
+  locally installed version is the latest
+- Releases are published only after their MSI is ready, preventing installed
+  copies from discovering an incomplete release
+- The updater now uses the repository's canonical GitHub address
+
+---
+
 ## v1.5.1 - Large AD script execution fix
 
 Released 17 August 2026.

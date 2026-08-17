@@ -31,6 +31,16 @@ class AppUpdatePromptTests(unittest.TestCase):
 
         self.assertTrue(self.target._ui_queue.empty())
 
+    def test_failed_automatic_check_does_not_stop_update_loop(self):
+        with patch.object(
+            app.updater,
+            "check_for_update",
+            side_effect=app.updater.UpdateCheckError("offline"),
+        ):
+            self.target._do_update_check()
+
+        self.assertTrue(self.target._ui_queue.empty())
+
 
 if __name__ == "__main__":
     unittest.main()
