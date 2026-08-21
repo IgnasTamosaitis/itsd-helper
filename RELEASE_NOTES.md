@@ -2,6 +2,19 @@
 
 ---
 
+## v1.5.3 - Manual AD account fallback
+
+Released 21 August 2026.
+
+- New-joiner tickets now read Jira's **Person id external** field when SAP
+  SuccessFactors has not provisioned an AD account
+- The Jira value is validated through an exact AD `SamAccountName` lookup before
+  the account can be selected
+- Existing SuccessFactors and rejoiner account-selection paths retain priority,
+  and disabled non-SF accounts continue through the existing rejoiner safeguards
+
+---
+
 ## v1.5.2 - Reliable automatic updates
 
 Released 17 August 2026.

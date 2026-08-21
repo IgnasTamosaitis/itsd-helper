@@ -46,6 +46,7 @@ class JiraLocationFieldTests(unittest.TestCase):
                         "customfield_10993": "Girpoltrans sp. z o.o.",
                         "customfield_14076": "Poland",
                         "customfield_11436": None,
+                        "customfield_11171": "x17330",
                         "customfield_10980": "2099-01-01",
                     },
                 }
@@ -61,8 +62,10 @@ class JiraLocationFieldTests(unittest.TestCase):
         self.assertEqual(tickets[0]["company_name"], "Girpoltrans sp. z o.o.")
         self.assertEqual(tickets[0]["office"], "Poznan Campus")
         self.assertEqual(tickets[0]["country"], "Poland")
+        self.assertEqual(tickets[0]["person_id_external"], "x17330")
         self.assertIn("customfield_10993", fake_session.last_params["fields"])
         self.assertIn("customfield_14076", fake_session.last_params["fields"])
+        self.assertIn("customfield_11171", fake_session.last_params["fields"])
         self.assertEqual(
             fake_session.last_params["jql"],
             "assignee = currentUser()",

@@ -11,7 +11,8 @@ from datetime import datetime
 from ad_automation import (
     detect_location, detect_site, detect_location_conflict, detect_address_warning,
     detect_domain, build_email, DEFAULT_GROUPS,
-    find_user_accounts, classify_scenario,
+    find_user_accounts, find_user_account_by_username,
+    select_new_joiner_account, classify_scenario,
     get_buddy_info, get_account_groups, build_verification_script,
     build_new_joiner_script, build_rejoiner_dual_script,
     build_rejoiner_single_script, run_ps,
@@ -478,6 +479,11 @@ class ADSetupWindow(tk.Toplevel):
     def _search_ad(self):
         first = self.ticket.get("first_name", "")
         last  = self.ticket.get("last_name", "")
+        requested_username = self.ticket.get("person_id_external", "").strip()
+        rejoiner_value = str(self.ticket.get("rejoiner", "")).strip().casefold()
+        ticket_is_rejoiner = rejoiner_value not in {
+            "", "no", "false", "0", "none", "n/a", "-",
+        }
         self._set_text(self._search_out, "Searching AD...")
         self._scenario_label.config(text="", fg=GRAY)
         self._show_busy("Searching AD", "Looking up matching accounts in Active Directory...")
@@ -485,7 +491,24 @@ class ADSetupWindow(tk.Toplevel):
         def _do():
             try:
                 accounts = find_user_accounts(first, last)
-                scenario = classify_scenario(accounts)
+                manual_account = {}
+                if requested_username and not ticket_is_rejoiner:
+                    manual_account = select_new_joiner_account(accounts, requested_username)
+                    if manual_account.get("is_sf"):
+                        manual_account = {}
+                    elif not manual_account:
+                        manual_account = find_user_account_by_username(requested_username) or {}
+
+                # An exact, active AD match from Jira is the supported fallback
+                # when SAP SF did not prepare an account. Disabled non-SF users
+                # keep the existing rejoiner classification path.
+                if (manual_account
+                        and manual_account.get("enabled")
+                        and not manual_account.get("disabled")):
+                    accounts = [manual_account]
+                    scenario = "new_joiner"
+                else:
+                    scenario = classify_scenario(accounts)
                 self.after(0, lambda: self._apply_search_result(accounts, scenario))
             except Exception as e:
                 self.after(0, lambda: self._handle_async_error("AD search failed", str(e)))
@@ -527,7 +550,10 @@ class ADSetupWindow(tk.Toplevel):
             key=lambda a: (not bool(a.get("disabled")), a.get("username", "").casefold()),
         )
 
-        self._sf_account  = sf_accounts[0]  if sf_accounts  else {}
+        self._sf_account = select_new_joiner_account(
+            accounts,
+            self.ticket.get("person_id_external", ""),
+        )
         self._old_accounts = old_accounts
         self._old_account = old_accounts[0] if old_accounts else {}
         self._hide_old_account_picker()

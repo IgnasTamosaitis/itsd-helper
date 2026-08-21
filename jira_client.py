@@ -219,13 +219,14 @@ _CF_COMPANY_NAME = "customfield_10976"   # Company's name
 _CF_COMPANY_READONLY = "customfield_10993"  # Company name (sometimes populated)
 _CF_COUNTRY      = "customfield_14076"
 _CF_SIMILAR_ROLE = "customfield_11436"   # Person who is working in the similar job role
+_CF_PERSON_ID_EXTERNAL = "customfield_11171"  # AD username when SF provisioning is handled manually
 
 _BASE_FETCH_FIELDS = [
     "summary", "status", "reporter",
     _CF_FIRST_NAME, _CF_LAST_NAME,
     _CF_POSITION, _CF_OFFICE, _CF_MANAGER, _CF_REJOINER,
     _CF_PHONE, _CF_COMPANY_NAME, _CF_COMPANY_READONLY, _CF_COUNTRY,
-    _CF_SIMILAR_ROLE,
+    _CF_SIMILAR_ROLE, _CF_PERSON_ID_EXTERNAL,
 ]
 
 def _parse_start_date(raw: str):
@@ -475,6 +476,7 @@ class JiraClient:
             )
             country = _jira_scalar_text(f.get(_CF_COUNTRY))
             similar_role_buddy = _jira_userpicker_to_buddy_candidate(f.get(_CF_SIMILAR_ROLE))
+            person_id_external = _jira_scalar_text(f.get(_CF_PERSON_ID_EXTERNAL)).strip()
 
             tickets.append(
                 {
@@ -491,6 +493,7 @@ class JiraClient:
                     "phone":        phone,
                     "company_name": company_name,
                     "country":      country,
+                    "person_id_external": person_id_external,
                     "similar_role_buddy": similar_role_buddy,
                     "status":         (f.get("status") or {}).get("name", ""),
                     "start_date":     start_date,

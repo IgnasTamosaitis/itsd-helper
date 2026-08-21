@@ -597,6 +597,43 @@ foreach ($u in $users) {{
     return _parse_account_search_output(out)
 
 
+def find_user_account_by_username(username: str) -> dict | None:
+    """Return the AD account whose SamAccountName exactly matches username."""
+    username = _nfc(username).strip()
+    if not username:
+        return None
+
+    out, err, code = run_ps(f"""
+Import-Module ActiveDirectory -ErrorAction Stop
+$users = Get-ADUser -Filter {{SamAccountName -eq '{_e(username)}'}} `
+    -Properties SamAccountName, Enabled, Title, DistinguishedName, EmployeeID
+foreach ($u in $users) {{
+    $emp = if ($u.EmployeeID) {{ $u.EmployeeID }} else {{ '' }}
+    "$($u.SamAccountName)|$($u.Enabled)|$($u.Title)|$($u.DistinguishedName)|$emp"
+}}
+""")
+    if code != 0 or not out:
+        return None
+    accounts = _parse_account_search_output(out)
+    return accounts[0] if len(accounts) == 1 else None
+
+
+def select_new_joiner_account(accounts: list[dict], requested_username: str = "") -> dict:
+    """Prefer an SF account; otherwise accept only an exact requested username."""
+    sf_accounts = [account for account in accounts if account.get("is_sf")]
+    if sf_accounts:
+        return sf_accounts[0]
+
+    requested = (requested_username or "").strip().casefold()
+    if not requested:
+        return {}
+    matches = [
+        account for account in accounts
+        if (account.get("username") or "").strip().casefold() == requested
+    ]
+    return matches[0] if len(matches) == 1 else {}
+
+
 def find_user_accounts_by_name(name: str) -> list[dict]:
     """Search AD by display/name first, then fall back to first+last parsing."""
     name = _nfc(name).strip()
